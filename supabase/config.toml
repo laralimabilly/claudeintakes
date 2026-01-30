@@ -1,0 +1,43 @@
+project_id = "ogpvzgbmsknripluvxxw"
+
+[functions.start-call]
+verify_jwt = false
+
+[functions.vapi-webhook]
+verify_jwt = false
+
+[functions.import-vapi-calls]
+verify_jwt = true
+
+[functions.get-profiles]
+verify_jwt = true
+
+[functions.update-profile]
+verify_jwt = true
+
+[functions.send-whatsapp-intro]
+verify_jwt = true
+
+[functions.twilio-whatsapp-webhook]
+verify_jwt = false
+
+[functions.decode-email]
+verify_jwt = false
+
+[functions.parse-deck]
+verify_jwt = false
+
+[functions.elevenlabs-signed-url]
+verify_jwt = false
+
+[functions.get-public-profile]
+verify_jwt = false
+
+[functions.process-new-founder]
+verify_jwt = false
+
+[functions.backfill-embeddings]
+verify_jwt = true
+
+[functions.get-founder-matches]
+verify_jwt = true
