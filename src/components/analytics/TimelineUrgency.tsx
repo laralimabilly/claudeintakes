@@ -1,8 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
-import type { Tables } from "@/integrations/supabase/types";
-
-type FounderProfile = Tables<"founder_profiles">;
+import type { FounderProfile } from "@/types/founder";
 
 interface TimelineUrgencyProps {
   profiles: FounderProfile[];

@@ -16,30 +16,66 @@ export type Database = {
     Tables: {
       founder_matches: {
         Row: {
+          a_interested: boolean | null
+          b_interested: boolean | null
+          compatibility_level: string | null
           created_at: string
           founder_id: string
           id: string
+          intro_sent_at: string | null
           matched_founder_id: string
-          similarity_score: number
+          notified_at: string | null
+          score_advantages: number | null
+          score_communication: number | null
+          score_geo: number | null
+          score_skills: number | null
+          score_stage: number | null
+          score_values: number | null
+          score_vision: number | null
           status: string | null
+          total_score: number
           updated_at: string
         }
         Insert: {
+          a_interested?: boolean | null
+          b_interested?: boolean | null
+          compatibility_level?: string | null
           created_at?: string
           founder_id: string
           id?: string
+          intro_sent_at?: string | null
           matched_founder_id: string
-          similarity_score: number
+          notified_at?: string | null
+          score_advantages?: number | null
+          score_communication?: number | null
+          score_geo?: number | null
+          score_skills?: number | null
+          score_stage?: number | null
+          score_values?: number | null
+          score_vision?: number | null
           status?: string | null
+          total_score: number
           updated_at?: string
         }
         Update: {
+          a_interested?: boolean | null
+          b_interested?: boolean | null
+          compatibility_level?: string | null
           created_at?: string
           founder_id?: string
           id?: string
+          intro_sent_at?: string | null
           matched_founder_id?: string
-          similarity_score?: number
+          notified_at?: string | null
+          score_advantages?: number | null
+          score_communication?: number | null
+          score_geo?: number | null
+          score_skills?: number | null
+          score_stage?: number | null
+          score_values?: number | null
+          score_vision?: number | null
           status?: string | null
+          total_score?: number
           updated_at?: string
         }
         Relationships: [

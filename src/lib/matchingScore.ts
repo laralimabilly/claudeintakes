@@ -1,6 +1,4 @@
-import type { Tables } from "@/integrations/supabase/types";
-
-type FounderProfile = Tables<"founder_profiles">;
+import type { FounderProfile } from "@/types/founder";
 
 export interface MatchScore {
   total: number; // 0-100

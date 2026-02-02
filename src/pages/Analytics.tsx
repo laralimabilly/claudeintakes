@@ -6,9 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Users, GitMerge, TrendingUp, Clock } from "lucide-react";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
-import type { Tables } from "@/integrations/supabase/types";
-
-type FounderProfile = Tables<"founder_profiles">;
+import type { FounderProfile } from "@/types/founder";
 
 const COLORS = ["#fff", "#a1a1aa", "#71717a", "#52525b"];
 

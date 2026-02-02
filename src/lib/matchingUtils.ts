@@ -3,49 +3,9 @@
 // AI embedding generation has been moved to edge functions for security
 
 import { supabase } from '@/integrations/supabase/client';
-import type { Tables } from '@/integrations/supabase/types';
+import type { FounderProfile, MatchScore, AIMatchResult } from '@/types/founder';
 
-type FounderProfile = Tables<'founder_profiles'>;
-
-// Match score breakdown for UI display
-export interface MatchScore {
-  total: number;
-  breakdown: {
-    skillsMatch: number;
-    locationFit: number;
-    timelineFit: number;
-    workStyleFit: number;
-  };
-  highlights: string[];
-  concerns: string[];
-}
-
-// AI match result from edge function
-export interface AIMatchResult {
-  id: string;
-  name?: string;
-  phone_number: string;
-  email?: string;
-  idea_description?: string;
-  stage?: string;
-  background?: string;
-  core_skills?: string[];
-  previous_founder?: boolean;
-  superpower?: string;
-  seeking_skills?: string[];
-  cofounder_type?: string;
-  location_preference?: string;
-  commitment_level?: string;
-  seriousness_score?: number;
-  similarity: number;
-  manualScore?: MatchScore;
-  created_at: string;
-  // Additional fields from match_founders RPC
-  weaknesses_blindspots?: string[];
-  timeline_start?: string;
-  urgency_level?: string;
-  working_style?: string;
-}
+export type { FounderProfile, MatchScore, AIMatchResult };
 
 /**
  * Find AI-powered matches for a founder via edge function

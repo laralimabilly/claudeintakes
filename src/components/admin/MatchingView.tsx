@@ -19,10 +19,8 @@ import {
   Briefcase,
   Zap,
 } from "lucide-react";
-import type { Tables } from "@/integrations/supabase/types";
+import type { FounderProfile } from "@/types/founder";
 import { findHybridMatches, type AIMatchResult } from "@/lib/matchingUtils";
-
-type FounderProfile = Tables<"founder_profiles">;
 
 export const MatchingView = () => {
   const [profiles, setProfiles] = useState<FounderProfile[]>([]);

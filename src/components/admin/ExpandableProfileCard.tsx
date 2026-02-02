@@ -4,9 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Eye, ChevronDown, ChevronUp, Link2, MapPin, Target, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import type { Tables } from "@/integrations/supabase/types";
-
-type FounderProfile = Tables<"founder_profiles">;
+import type { FounderProfile } from "@/types/founder";
 
 interface ExpandableProfileCardProps {
   profile: FounderProfile;

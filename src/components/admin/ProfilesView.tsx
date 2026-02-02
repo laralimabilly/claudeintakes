@@ -9,9 +9,7 @@ import { ExpandableProfileCard } from "./ExpandableProfileCard";
 import { ProfileModal } from "./ProfileModal";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { Import, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
-import type { Tables } from "@/integrations/supabase/types";
-
-type FounderProfile = Tables<"founder_profiles">;
+import type { FounderProfile } from "@/types/founder";
 
 interface ProfilesViewProps {
   onSelectForMatching?: (profiles: FounderProfile[]) => void;

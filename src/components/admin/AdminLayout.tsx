@@ -8,20 +8,22 @@ import {
   ChevronLeft,
   ChevronRight,
   Home,
-  Wrench
+  Wrench,
+  ListChecks
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
-  activeSection: "profiles" | "matching" | "tools";
-  onSectionChange: (section: "profiles" | "matching" | "tools") => void;
+  activeSection: "profiles" | "matching" | "matches" | "tools";
+  onSectionChange: (section: "profiles" | "matching" | "matches" | "tools") => void;
 }
 
 const navItems = [
   { id: "profiles" as const, label: "Profiles", icon: Users, description: "Browse & manage founders" },
-  { id: "matching" as const, label: "Matching", icon: GitMerge, description: "Connect founders" },
+  { id: "matching" as const, label: "Matching", icon: GitMerge, description: "Connect founders manually" },
+  { id: "matches" as const, label: "Matches", icon: ListChecks, description: "View computed matches" },
   { id: "tools" as const, label: "Tools", icon: Wrench, description: "System utilities" },
 ];
 

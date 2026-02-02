@@ -298,11 +298,28 @@ serve(async (req) => {
       // Don't fail the webhook
     }
 
+    // Trigger matching computation (fire and forget)
+    try {
+      fetch(`${supabaseUrl}/functions/v1/compute-matches`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`
+        },
+        body: JSON.stringify({ founder_id: data.id })
+      }).catch(err => console.error('Matching computation failed:', err));
+      
+      console.log('Triggered matching computation for founder:', data.id);
+    } catch (matchingError) {
+      console.error('Error triggering matching:', matchingError);
+      // Don't fail the webhook
+    }
+
     return new Response(
       JSON.stringify({
         success: true,
         profileId: data.id,
-        message: "Founder profile saved and embedding generation triggered",
+        message: "Founder profile saved, embedding generation and matching triggered",
       }),
       {
         status: 200,

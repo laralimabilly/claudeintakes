@@ -7,9 +7,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDown, Edit, Trash2, MessageSquare, CheckCircle, X } from "lucide-react";
-import type { Tables } from "@/integrations/supabase/types";
-
-type FounderProfile = Tables<"founder_profiles">;
+import type { FounderProfile } from "@/types/founder";
 
 interface BulkActionsBarProps {
   selectedProfiles: FounderProfile[];

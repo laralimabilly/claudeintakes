@@ -4,34 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, MapPin, Target, Briefcase, Sparkles, Heart, Scale } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-
-interface FounderProfile {
-  id: string;
-  name: string | null;
-  idea_description: string | null;
-  problem_solving: string | null;
-  target_customer: string | null;
-  stage: string | null;
-  excitement_reason: string | null;
-  background: string | null;
-  core_skills: string[] | null;
-  previous_founder: boolean | null;
-  superpower: string | null;
-  weaknesses_blindspots: string[] | null;
-  timeline_start: string | null;
-  urgency_level: string | null;
-  seeking_skills: string[] | null;
-  cofounder_type: string | null;
-  location_preference: string | null;
-  commitment_level: string | null;
-  working_style: string | null;
-  non_negotiables: string[] | null;
-  deal_breakers: string[] | null;
-  equity_thoughts: string | null;
-  success_criteria: string | null;
-  willingness_to_pay: string | null;
-  created_at: string;
-}
+import type { FounderProfile } from "@/types/founder";
 
 const FounderProfile = () => {
   const { id } = useParams<{ id: string }>();
