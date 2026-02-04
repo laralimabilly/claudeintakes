@@ -1,5 +1,5 @@
 // src/components/admin/MatchingView.tsx
-// UPDATED: Now uses AI-powered embeddings for matching
+// Updated to use 7-dimension matching with dealbreakers
 
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { 
   Search, 
   Plus, 
@@ -18,9 +19,11 @@ import {
   MapPin,
   Briefcase,
   Zap,
+  BarChart3,
 } from "lucide-react";
-import type { FounderProfile } from "@/types/founder";
-import { findHybridMatches, type AIMatchResult } from "@/lib/matchingUtils";
+import type { FounderProfile, AIMatchResult, MatchResult } from "@/types/founder";
+import { findHybridMatches } from "@/lib/matchingUtils";
+import { MatchDetails } from "./MatchDetails";
 
 export const MatchingView = () => {
   const [profiles, setProfiles] = useState<FounderProfile[]>([]);
@@ -31,6 +34,10 @@ export const MatchingView = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
+  const [selectedMatchDetails, setSelectedMatchDetails] = useState<{
+    profile: AIMatchResult;
+    matchResult: MatchResult;
+  } | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -39,6 +46,7 @@ export const MatchingView = () => {
 
   // Load AI matches when a founder is focused
   useEffect(() => {
+    console.log('[MatchingView] focusedFounder changed:', focusedFounder?.name || focusedFounder?.id || 'null');
     if (focusedFounder) {
       loadAIMatches(focusedFounder);
     } else {
@@ -76,6 +84,7 @@ export const MatchingView = () => {
   };
 
   const loadAIMatches = async (founder: FounderProfile) => {
+    console.log('[MatchingView] loadAIMatches called for:', founder.name || founder.id);
     setIsLoadingMatches(true);
     try {
       const matches = await findHybridMatches(
@@ -84,9 +93,10 @@ export const MatchingView = () => {
         0.70, // Similarity threshold
         20    // Candidates to evaluate
       );
+      console.log('[MatchingView] Received matches:', matches.length, matches.map(m => ({ id: m.id, name: m.name, score: m.matchResult?.total_score })));
       setAIMatches(matches);
     } catch (error) {
-      console.error("Error loading AI matches:", error);
+      console.error("[MatchingView] Error loading AI matches:", error);
       toast({
         title: "Matching Error",
         description: "Failed to load AI-powered matches",
@@ -111,9 +121,9 @@ export const MatchingView = () => {
       );
     }
     
-    // If we have AI matches and a focused founder, sort by AI similarity
+    // If we have AI matches and a focused founder, sort by the new 7-dimension score
     if (focusedFounder && aiMatches.length > 0) {
-      const scoreMap = new Map(aiMatches.map(m => [m.id, m.similarity]));
+      const scoreMap = new Map(aiMatches.map(m => [m.id, m.matchResult?.total_score ?? m.similarity * 100]));
       result = [...result].sort((a, b) => {
         const scoreA = scoreMap.get(a.id) ?? 0;
         const scoreB = scoreMap.get(b.id) ?? 0;
@@ -124,19 +134,21 @@ export const MatchingView = () => {
     return result;
   }, [profiles, searchTerm, focusedFounder, aiMatches]);
 
-  const getAIScoreForProfile = (profileId: string): number | null => {
+  const getMatchForProfile = (profileId: string): AIMatchResult | null => {
     if (!focusedFounder || aiMatches.length === 0) return null;
-    const match = aiMatches.find(m => m.id === profileId);
-    return match ? match.similarity : null;
+    return aiMatches.find(m => m.id === profileId) || null;
   };
 
   const addToMatch = (profile: FounderProfile) => {
+    console.log('[MatchingView] addToMatch called:', profile.name || profile.id);
     if (selectedForMatch.find(p => p.id === profile.id)) return;
     
     const newSelected = [...selectedForMatch, profile];
     setSelectedForMatch(newSelected);
     
+    // Always update focused founder when adding first selection
     if (!focusedFounder) {
+      console.log('[MatchingView] Setting focused founder:', profile.name || profile.id);
       setFocusedFounder(profile);
     }
   };
@@ -179,9 +191,8 @@ export const MatchingView = () => {
     }
   };
 
-  const ScoreBadge = ({ score, isAI = false }: { score: number; isAI?: boolean }) => {
-    const percentage = isAI ? Math.round(score * 100) : score;
-    const tier = percentage >= 85 ? "excellent" : percentage >= 70 ? "good" : percentage >= 55 ? "fair" : "low";
+  const ScoreBadge = ({ score, compatibilityLevel }: { score: number; compatibilityLevel?: 'highly_compatible' | 'somewhat_compatible' }) => {
+    const tier = score >= 75 ? "excellent" : score >= 60 ? "good" : score >= 45 ? "fair" : "low";
     
     const colors = {
       excellent: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
@@ -192,8 +203,11 @@ export const MatchingView = () => {
     
     return (
       <span className={`px-2 py-0.5 text-[10px] font-medium rounded border ${colors[tier]} inline-flex items-center gap-1`}>
-        {isAI && <Zap className="w-2.5 h-2.5" />}
-        {percentage}%
+        <Zap className="w-2.5 h-2.5" />
+        {Math.round(score)}%
+        {compatibilityLevel === 'highly_compatible' && (
+          <span className="text-emerald-400">★</span>
+        )}
       </span>
     );
   };
@@ -219,7 +233,7 @@ export const MatchingView = () => {
             {focusedFounder && (
               <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-400/80">
                 <Zap className="h-2.5 w-2.5 mr-1" />
-                AI-Ranked for {focusedFounder.name || "Founder"}
+                7D Scored for {focusedFounder.name || "Founder"}
               </Badge>
             )}
           </div>
@@ -240,14 +254,15 @@ export const MatchingView = () => {
             {isLoadingMatches && focusedFounder && (
               <div className="text-center py-8">
                 <div className="w-6 h-6 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-2" />
-                <p className="text-xs text-silver/50">Loading AI matches...</p>
+                <p className="text-xs text-silver/50">Computing 7-dimension scores...</p>
               </div>
             )}
 
             {filteredProfiles.map((profile) => {
               const isSelected = selectedForMatch.some(p => p.id === profile.id);
               const isFocused = focusedFounder?.id === profile.id;
-              const aiScore = getAIScoreForProfile(profile.id);
+              const matchData = getMatchForProfile(profile.id);
+              const score = matchData?.matchResult?.total_score ?? (matchData?.similarity ? matchData.similarity * 100 : null);
               
               return (
                 <div
@@ -267,7 +282,12 @@ export const MatchingView = () => {
                         <h4 className="text-sm font-medium text-white truncate">
                           {profile.name || "Anonymous"}
                         </h4>
-                        {aiScore !== null && <ScoreBadge score={aiScore} isAI={true} />}
+                        {score !== null && (
+                          <ScoreBadge 
+                            score={score} 
+                            compatibilityLevel={matchData?.matchResult?.compatibility_level}
+                          />
+                        )}
                       </div>
                       <p className="text-xs text-silver/50 line-clamp-2 mt-1">
                         {profile.idea_description || "No description"}
@@ -288,17 +308,35 @@ export const MatchingView = () => {
                         )}
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 w-7 p-0 text-silver/40 hover:text-white hover:bg-white/10"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        isSelected ? removeFromMatch(profile.id) : addToMatch(profile);
-                      }}
-                    >
-                      {isSelected ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      {matchData?.matchResult && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0 text-silver/40 hover:text-white hover:bg-white/10"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedMatchDetails({
+                              profile: matchData,
+                              matchResult: matchData.matchResult!,
+                            });
+                          }}
+                        >
+                          <BarChart3 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0 text-silver/40 hover:text-white hover:bg-white/10"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          isSelected ? removeFromMatch(profile.id) : addToMatch(profile);
+                        }}
+                      >
+                        {isSelected ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                      </Button>
+                    </div>
                   </div>
                 </div>
               );
@@ -329,11 +367,13 @@ export const MatchingView = () => {
               <div className="text-center py-12">
                 <ArrowRight className="h-6 w-6 text-silver/20 mx-auto mb-3" />
                 <p className="text-sm text-silver/40">Click founders to add them</p>
-                <p className="text-xs text-silver/30 mt-1">First selected becomes the AI reference</p>
+                <p className="text-xs text-silver/30 mt-1">First selected becomes the reference</p>
               </div>
             ) : (
               selectedForMatch.map((profile, index) => {
                 const isFocused = focusedFounder?.id === profile.id;
+                const matchData = getMatchForProfile(profile.id);
+                
                 return (
                   <div key={profile.id} className="relative">
                     {index > 0 && (
@@ -358,13 +398,38 @@ export const MatchingView = () => {
                             {isFocused && (
                               <span className="inline-flex items-center gap-1 text-[9px] text-emerald-400/70">
                                 <Zap className="w-2.5 h-2.5" />
-                                AI Ref
+                                Ref
                               </span>
                             )}
                           </div>
                           <p className="text-[10px] text-silver/50 mt-0.5">
                             {profile.stage || "Unknown stage"}
                           </p>
+                          
+                          {/* Show match score breakdown if available */}
+                          {matchData?.matchResult && !isFocused && (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-silver/50">Total Score</span>
+                                <span className={`font-medium ${
+                                  matchData.matchResult.total_score >= 75 
+                                    ? 'text-emerald-400' 
+                                    : matchData.matchResult.total_score >= 60 
+                                      ? 'text-blue-400' 
+                                      : 'text-amber-400'
+                                }`}>
+                                  {Math.round(matchData.matchResult.total_score)}%
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-x-2 text-[8px] text-silver/40">
+                                <span>Skills: {Math.round(matchData.matchResult.dimension_scores.skills)}%</span>
+                                <span>Stage: {Math.round(matchData.matchResult.dimension_scores.stage)}%</span>
+                                <span>Comm: {Math.round(matchData.matchResult.dimension_scores.communication)}%</span>
+                                <span>Vision: {Math.round(matchData.matchResult.dimension_scores.vision)}%</span>
+                              </div>
+                            </div>
+                          )}
+                          
                           {profile.core_skills && profile.core_skills.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-2">
                               {profile.core_skills.slice(0, 3).map((skill, idx) => (
@@ -427,6 +492,20 @@ export const MatchingView = () => {
           )}
         </div>
       </div>
+
+      {/* Match Details Dialog */}
+      <Dialog open={!!selectedMatchDetails} onOpenChange={() => setSelectedMatchDetails(null)}>
+        <DialogContent className="max-w-lg bg-charcoal border-white/10">
+          <DialogHeader>
+            <DialogTitle className="text-white">
+              Match Analysis: {selectedMatchDetails?.profile.name || "Founder"}
+            </DialogTitle>
+          </DialogHeader>
+          {selectedMatchDetails && (
+            <MatchDetails match={selectedMatchDetails.matchResult} />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

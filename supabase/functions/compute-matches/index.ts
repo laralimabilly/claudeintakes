@@ -30,10 +30,16 @@ Deno.serve(async (req) => {
 
     console.log(`Computing matches for founder: ${founder_id}`)
 
-    // 1. Get the founder's profile
+    // 1. Get the founder's profile with location data
     const { data: newFounder, error: founderError } = await supabase
       .from('founder_profiles')
-      .select('*')
+      .select(`
+        *,
+        location:founder_locations(
+          lat, lng, city, country, timezone_offset,
+          is_remote_ok, is_remote_only, is_hybrid_ok, willing_to_relocate
+        )
+      `)
       .eq('id', founder_id)
       .single()
 
@@ -41,11 +47,17 @@ Deno.serve(async (req) => {
       throw new Error(`Founder not found: ${founderError?.message}`)
     }
 
-    // 2. Get all other founders (excluding self)
+    // 2. Get all other founders (excluding self) with location data
     // Note: Using 'new' status or other active statuses as needed
     const { data: existingFounders, error: foundersError } = await supabase
       .from('founder_profiles')
-      .select('*')
+      .select(`
+        *,
+        location:founder_locations(
+          lat, lng, city, country, timezone_offset,
+          is_remote_ok, is_remote_only, is_hybrid_ok, willing_to_relocate
+        )
+      `)
       .neq('id', founder_id)
 
     if (foundersError) {

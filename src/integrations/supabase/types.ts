@@ -14,6 +14,83 @@ export type Database = {
   }
   public: {
     Tables: {
+      founder_locations: {
+        Row: {
+          city: string | null
+          confidence: string | null
+          country: string | null
+          country_name: string | null
+          created_at: string
+          display_name: string | null
+          founder_id: string
+          geocode_source: string | null
+          geocoded_at: string | null
+          id: string
+          is_hybrid_ok: boolean | null
+          is_remote_ok: boolean | null
+          is_remote_only: boolean | null
+          lat: number | null
+          lng: number | null
+          raw_input: string
+          region: string | null
+          timezone_offset: number | null
+          updated_at: string
+          willing_to_relocate: boolean | null
+        }
+        Insert: {
+          city?: string | null
+          confidence?: string | null
+          country?: string | null
+          country_name?: string | null
+          created_at?: string
+          display_name?: string | null
+          founder_id: string
+          geocode_source?: string | null
+          geocoded_at?: string | null
+          id?: string
+          is_hybrid_ok?: boolean | null
+          is_remote_ok?: boolean | null
+          is_remote_only?: boolean | null
+          lat?: number | null
+          lng?: number | null
+          raw_input: string
+          region?: string | null
+          timezone_offset?: number | null
+          updated_at?: string
+          willing_to_relocate?: boolean | null
+        }
+        Update: {
+          city?: string | null
+          confidence?: string | null
+          country?: string | null
+          country_name?: string | null
+          created_at?: string
+          display_name?: string | null
+          founder_id?: string
+          geocode_source?: string | null
+          geocoded_at?: string | null
+          id?: string
+          is_hybrid_ok?: boolean | null
+          is_remote_ok?: boolean | null
+          is_remote_only?: boolean | null
+          lat?: number | null
+          lng?: number | null
+          raw_input?: string
+          region?: string | null
+          timezone_offset?: number | null
+          updated_at?: string
+          willing_to_relocate?: boolean | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "founder_locations_founder_id_fkey"
+            columns: ["founder_id"]
+            isOneToOne: true
+            referencedRelation: "founder_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       founder_matches: {
         Row: {
           a_interested: boolean | null

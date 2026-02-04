@@ -1,4 +1,5 @@
 import { BackfillEmbeddings } from "./BackfillEmbeddings";
+import { BackfillGeolocation } from "./BackfillGeolocation";
 import { Wrench } from "lucide-react";
 
 export const ToolsView = () => {
@@ -18,6 +19,7 @@ export const ToolsView = () => {
       {/* Tools Grid */}
       <div className="grid gap-6 max-w-2xl">
         <BackfillEmbeddings />
+        <BackfillGeolocation />
       </div>
     </div>
   );

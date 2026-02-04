@@ -30,7 +30,24 @@ export interface FounderProfileForMatching {
   non_negotiables: string[] | null;
 }
 
-// Match score breakdown for UI display
+// New 7-dimension match result (used by compute-matches and MatchingView)
+export interface MatchResult {
+  founder_a_id: string;
+  founder_b_id: string;
+  total_score: number;
+  compatibility_level: 'highly_compatible' | 'somewhat_compatible';
+  dimension_scores: {
+    skills: number;
+    stage: number;
+    communication: number;
+    vision: number;
+    values: number;
+    geo: number;
+    advantages: number;
+  };
+}
+
+// Legacy match score breakdown (deprecated, kept for backward compatibility)
 export interface MatchScore {
   total: number;
   breakdown: {
@@ -43,30 +60,19 @@ export interface MatchScore {
   concerns: string[];
 }
 
-// AI match result from edge function
-export interface AIMatchResult {
-  id: string;
+// AI match result from edge function (enhanced with new scoring)
+export interface AIMatchResult extends FounderProfileForMatching {
   name?: string;
   phone_number: string;
   email?: string;
-  idea_description?: string;
-  stage?: string;
-  background?: string;
-  core_skills?: string[];
-  previous_founder?: boolean;
-  superpower?: string;
-  seeking_skills?: string[];
   cofounder_type?: string;
-  location_preference?: string;
-  commitment_level?: string;
   seriousness_score?: number;
   similarity: number;
-  manualScore?: MatchScore;
   created_at: string;
-  weaknesses_blindspots?: string[];
-  timeline_start?: string;
-  urgency_level?: string;
-  working_style?: string;
+  // New 7-dimension scores
+  matchResult?: MatchResult;
+  // Legacy score (deprecated)
+  manualScore?: MatchScore;
 }
 
 // Founder match record from database

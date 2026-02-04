@@ -1,263 +1,372 @@
-// _shared/matching/scoringFunctions.ts
-// 7-dimension matching scoring functions for edge functions
+// lib/matching/scoringFunctions.ts
+// 7-dimension matching scoring functions
 
-import type { FounderProfileForMatching } from './types.ts';
+import type { FounderProfileForMatching } from "@/types/founder";
+import { calculateCoverage, calculateOverlap, semanticSkillBoost, calculateSuperpowerBoost } from "./skillsHelpers";
+import {
+  DIRECTNESS_DIRECT,
+  DIRECTNESS_GENTLE,
+  STRUCTURE_STRUCTURED,
+  STRUCTURE_FLEXIBLE,
+  COLLAB_ASYNC,
+  COLLAB_SYNC,
+  SPECTRUM_SCORES,
+  placeOnSpectrum,
+} from "./communicationHelpers";
+import {
+  type FounderWithLocation,
+  calculateDistanceKm,
+  scoreDistance,
+  getTimezoneModifier,
+  parseLocationPrefsFromText,
+} from "./geoHelpers";
+import {
+  extractIndustries,
+  extractSegments,
+  buildVisionText,
+  extractWords,
+  jaccard,
+  cosineSimilarity,
+  parseEmbedding,
+} from "./visionHelpers";
+import { extractValueProfile, scoreDimension, scoreEquity } from "./valuesHelpers";
 
+// Re-export for convenience
+export type { FounderProfileForMatching };
+
+// Use FounderProfileForMatching for scoring functions
 type FounderProfile = FounderProfileForMatching;
 
 // ============================================================================
-// 1. Skills Complementarity (27%)
+// 1. Skills Complementarity (30%)
+//
+// Three-layer matching approach:
+//   Layer 1: Normalized exact match (lowercase + trimmed)
+//   Layer 2: Synonym group + partial string matching
+//   Layer 3: Semantic skill vocabulary overlap (Jaccard on skill-related text)
+//
+// Also includes superpower ↔ weakness complementarity analysis.
 // ============================================================================
+
+/**
+ * Score skills complementarity between two founders (0–100).
+ *
+ * Weighted breakdown:
+ *   70% — Bidirectional coverage (does A have what B seeks & vice versa)
+ *   20% — Superpower / weakness complementarity
+ *   10% — Semantic skill vocabulary overlap
+ *   Penalty — Up to -30% for excessive core skill overlap
+ */
 export function scoreSkills(a: FounderProfile, b: FounderProfile): number {
-  const aSkills = new Set(a.core_skills || []);
-  const bSkills = new Set(b.core_skills || []);
-  const aSeeking = new Set(a.seeking_skills || []);
-  const bSeeking = new Set(b.seeking_skills || []);
+  // --- Coverage (Layers 1 + 2) ---
+  const aCoversB = calculateCoverage(a.core_skills, b.seeking_skills);
+  const bCoversA = calculateCoverage(b.core_skills, a.seeking_skills);
+  const avgCoverage = (aCoversB + bCoversA) / 2;
 
-  // How well does A cover B's needs?
-  const aCoversB = bSeeking.size > 0 
-    ? Array.from(aSkills).filter(s => bSeeking.has(s)).length / bSeeking.size 
-    : 0;
+  // --- Superpower ↔ weakness boost ---
+  const superpowerBoost = calculateSuperpowerBoost(a, b);
 
-  // How well does B cover A's needs?
-  const bCoversA = aSeeking.size > 0
-    ? Array.from(bSkills).filter(s => aSeeking.has(s)).length / aSeeking.size
-    : 0;
+  // --- Semantic vocabulary boost (Layer 3) ---
+  const semanticBoost = semanticSkillBoost(a, b);
 
-  // Average coverage
-  const coverage = (aCoversB + bCoversA) / 2;
+  // --- Overlap penalty ---
+  const overlap = calculateOverlap(a.core_skills, b.core_skills);
+  const overlapPenalty = overlap * 0.3;
 
-  // Penalty for too much skill overlap (we want complementarity)
-  const allSkills = new Set([...aSkills, ...bSkills]);
-  const overlap = allSkills.size > 0
-    ? Array.from(aSkills).filter(s => bSkills.has(s)).length / allSkills.size
-    : 0;
-  
-  const overlapPenalty = overlap * 0.4;
+  // --- Combine ---
+  const rawScore = (avgCoverage * 0.7 + superpowerBoost * 0.2 + semanticBoost * 0.1) * 100;
 
-  const score = (coverage * 100) * (1 - overlapPenalty);
-  return Math.min(100, Math.max(0, score));
+  const finalScore = rawScore * (1 - overlapPenalty);
+
+  return Math.min(100, Math.max(0, Math.round(finalScore * 10) / 10));
 }
 
 // ============================================================================
-// 2. Stage & Timeline Alignment (23%)
+// 2. Stage & Timeline Alignment (20%)
 // ============================================================================
 export function scoreStage(a: FounderProfile, b: FounderProfile): number {
+  // Stage alignment scoring
   const normalizeStage = (stage: string): string => {
-    const s = stage?.toLowerCase() || 'idea';
-    if (s.includes('idea') || s.includes('validation')) return 'idea';
-    if (s.includes('mvp') || s.includes('building')) return 'mvp';
-    if (s.includes('launch')) return 'launched';
-    if (s.includes('scal')) return 'scaling';
-    return 'idea';
+    const s = stage?.toLowerCase() || "idea";
+    if (s.includes("idea") || s.includes("validation")) return "idea";
+    if (s.includes("mvp") || s.includes("building")) return "mvp";
+    if (s.includes("launch")) return "launched";
+    if (s.includes("scal")) return "scaling";
+    return "idea";
   };
 
   const stageScores: Record<string, Record<string, number>> = {
-    'idea': { 'idea': 100, 'mvp': 80, 'launched': 50, 'scaling': 30 },
-    'mvp': { 'idea': 80, 'mvp': 100, 'launched': 80, 'scaling': 50 },
-    'launched': { 'idea': 50, 'mvp': 80, 'launched': 100, 'scaling': 80 },
-    'scaling': { 'idea': 30, 'mvp': 50, 'launched': 80, 'scaling': 100 }
+    idea: { idea: 100, mvp: 80, launched: 50, scaling: 30 },
+    mvp: { idea: 80, mvp: 100, launched: 80, scaling: 50 },
+    launched: { idea: 50, mvp: 80, launched: 100, scaling: 80 },
+    scaling: { idea: 30, mvp: 50, launched: 80, scaling: 100 },
   };
 
-  const aStage = normalizeStage(a.stage || '');
-  const bStage = normalizeStage(b.stage || '');
+  const aStage = normalizeStage(a.stage);
+  const bStage = normalizeStage(b.stage);
   const stageScore = stageScores[aStage]?.[bStage] || 50;
 
+  // Timeline/urgency alignment
   const normalizeUrgency = (urgency: string): string => {
-    const u = urgency?.toLowerCase() || 'flexible';
-    if (u.includes('asap') || u.includes('immediately') || u.includes('urgent')) return 'asap';
-    if (u.includes('soon') || u.includes('month')) return 'soon';
-    return 'flexible';
+    const u = urgency?.toLowerCase() || "flexible";
+    if (u.includes("asap") || u.includes("immediately") || u.includes("urgent")) return "asap";
+    if (u.includes("soon") || u.includes("month")) return "soon";
+    return "flexible";
   };
 
   const urgencyScores: Record<string, Record<string, number>> = {
-    'asap': { 'asap': 100, 'soon': 80, 'flexible': 50 },
-    'soon': { 'asap': 80, 'soon': 100, 'flexible': 80 },
-    'flexible': { 'asap': 50, 'soon': 80, 'flexible': 100 }
+    asap: { asap: 100, soon: 80, flexible: 50 },
+    soon: { asap: 80, soon: 100, flexible: 80 },
+    flexible: { asap: 50, soon: 80, flexible: 100 },
   };
 
-  const aUrgency = normalizeUrgency(a.urgency_level || '');
-  const bUrgency = normalizeUrgency(b.urgency_level || '');
+  const aUrgency = normalizeUrgency(a.urgency_level);
+  const bUrgency = normalizeUrgency(b.urgency_level);
   const urgencyScore = urgencyScores[aUrgency]?.[bUrgency] || 60;
 
+  // Commitment alignment
   let commitmentScore = 70;
-  const aCommit = a.commitment_level?.toLowerCase() || '';
-  const bCommit = b.commitment_level?.toLowerCase() || '';
-  
+  const aCommit = a.commitment_level?.toLowerCase() || "";
+  const bCommit = b.commitment_level?.toLowerCase() || "";
+
   if (aCommit === bCommit) {
     commitmentScore = 100;
-  } else if (aCommit.includes('full') || bCommit.includes('full')) {
-    commitmentScore = 50;
+  } else if (aCommit.includes("full") || bCommit.includes("full")) {
+    commitmentScore = 50; // One full-time, one not
   }
 
   return (stageScore + urgencyScore + commitmentScore) / 3;
 }
 
 // ============================================================================
-// 3. Communication & Conflict Style (19%)
+// 3. Communication & Conflict Style (18%)
+//
+// Evaluates 3 sub-dimensions from multiple profile fields:
+//   1. Communication directness (40% of this score)
+//   2. Structure preference (35% of this score)
+//   3. Collaboration mode (25% of this score)
 // ============================================================================
 export function scoreCommunication(a: FounderProfile, b: FounderProfile): number {
-  const extractCommStyle = (workingStyle: string): string => {
-    const ws = workingStyle?.toLowerCase() || '';
-    
-    if (ws.includes('direct') || ws.includes('blunt') || ws.includes('straightforward')) {
-      return 'direct';
-    }
-    if (ws.includes('gentle') || ws.includes('careful') || ws.includes('thoughtful')) {
-      return 'gentle';
-    }
-    return 'diplomatic';
-  };
+  // --- Sub-dimension 1: Directness ---
+  const aDirectness = placeOnSpectrum(a, DIRECTNESS_DIRECT, DIRECTNESS_GENTLE);
+  const bDirectness = placeOnSpectrum(b, DIRECTNESS_DIRECT, DIRECTNESS_GENTLE);
+  const directnessScore = SPECTRUM_SCORES[aDirectness]?.[bDirectness] ?? 65;
 
-  const commScores: Record<string, Record<string, number>> = {
-    'direct': { 'direct': 100, 'diplomatic': 70, 'gentle': 40 },
-    'diplomatic': { 'direct': 70, 'diplomatic': 100, 'gentle': 80 },
-    'gentle': { 'direct': 40, 'diplomatic': 80, 'gentle': 100 }
-  };
+  // --- Sub-dimension 2: Structure preference ---
+  const aStructure = placeOnSpectrum(a, STRUCTURE_STRUCTURED, STRUCTURE_FLEXIBLE);
+  const bStructure = placeOnSpectrum(b, STRUCTURE_STRUCTURED, STRUCTURE_FLEXIBLE);
+  const structureScore = SPECTRUM_SCORES[aStructure]?.[bStructure] ?? 65;
 
-  const aStyle = extractCommStyle(a.working_style || '');
-  const bStyle = extractCommStyle(b.working_style || '');
+  // --- Sub-dimension 3: Collaboration mode ---
+  const aCollab = placeOnSpectrum(a, COLLAB_ASYNC, COLLAB_SYNC);
+  const bCollab = placeOnSpectrum(b, COLLAB_ASYNC, COLLAB_SYNC);
+  const collabScore = SPECTRUM_SCORES[aCollab]?.[bCollab] ?? 65;
 
-  return commScores[aStyle]?.[bStyle] || 60;
+  // --- Weighted combination ---
+  const finalScore = directnessScore * 0.4 + structureScore * 0.35 + collabScore * 0.25;
+
+  return Math.round(finalScore * 10) / 10;
 }
 
 // ============================================================================
-// 4. Vision & Problem Space Alignment (15%)
+// 4. Vision & Problem Space Alignment (12%)
+//
+// Measures how aligned two founders are on:
+//   1. Problem space / industry vertical (45%)
+//   2. Target customer segment (30%)
+//   3. Semantic similarity via embeddings or vocab fallback (15%)
+//   4. Vocabulary overlap boost (10%)
 // ============================================================================
 export function scoreVision(a: FounderProfile, b: FounderProfile): number {
-  const parseEmbedding = (emb: number[] | string | null | undefined): number[] | null => {
-    if (!emb) return null;
-    if (Array.isArray(emb)) return emb;
-    try {
-      return JSON.parse(emb);
-    } catch {
-      return null;
+  const aVisionText = buildVisionText(a);
+  const bVisionText = buildVisionText(b);
+
+  // --- Industry alignment (40%) ---
+  const aIndustries = extractIndustries(aVisionText);
+  const bIndustries = extractIndustries(bVisionText);
+
+  let industryScore = 0;
+  if (aIndustries.size > 0 && bIndustries.size > 0) {
+    const overlap = new Set([...aIndustries].filter((x) => bIndustries.has(x)));
+    if (overlap.size > 0) {
+      // Strong match: at least one industry in common
+      const overlapRatio = overlap.size / Math.max(aIndustries.size, bIndustries.size);
+      industryScore = 0.7 + overlapRatio * 0.3; // 70-100%
+    } else {
+      // No overlap = low score (different industries)
+      industryScore = 0.2;
     }
-  };
-
-  const aEmb = parseEmbedding(a.embedding);
-  const bEmb = parseEmbedding(b.embedding);
-
-  if (aEmb && bEmb && aEmb.length === bEmb.length) {
-    const similarity = cosineSimilarity(aEmb, bEmb);
-    return similarity * 100;
+  } else if (aIndustries.size > 0 || bIndustries.size > 0) {
+    // One has industry, one doesn't = neutral
+    industryScore = 0.5;
+  } else {
+    // Neither has detectable industry = neutral-low (unknown)
+    industryScore = 0.5;
   }
 
-  const aText = `${a.idea_description || ''} ${a.problem_solving || ''} ${a.target_customer || ''}`.toLowerCase();
-  const bText = `${b.idea_description || ''} ${b.problem_solving || ''} ${b.target_customer || ''}`.toLowerCase();
+  // --- Customer segment alignment (25%) ---
+  const aSegments = extractSegments(aVisionText + " " + (a.target_customer || ""));
+  const bSegments = extractSegments(bVisionText + " " + (b.target_customer || ""));
 
-  const aWords = new Set(aText.split(/\s+/).filter(w => w.length > 4));
-  const bWords = new Set(bText.split(/\s+/).filter(w => w.length > 4));
-
-  if (aWords.size === 0 || bWords.size === 0) return 50;
-
-  const intersection = Array.from(aWords).filter(w => bWords.has(w)).length;
-  const union = new Set([...aWords, ...bWords]).size;
-
-  return (intersection / union) * 100;
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (!a || !b || a.length !== b.length) return 0;
-  
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+  let segmentScore = 0;
+  if (aSegments.size > 0 && bSegments.size > 0) {
+    const segmentOverlap = jaccard(aSegments, bSegments);
+    if (segmentOverlap > 0) {
+      segmentScore = 0.75 + segmentOverlap * 0.25; // 75-100%
+    } else {
+      // Different segments = lower score
+      segmentScore = 0.3;
+    }
+  } else {
+    // Unknown segments = neutral
+    segmentScore = 0.5;
   }
-  
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+
+  // --- Semantic similarity (25%) ---
+  let semanticScore = 0;
+  const aEmbed = parseEmbedding(a.embedding);
+  const bEmbed = parseEmbedding(b.embedding);
+
+  if (aEmbed && bEmbed) {
+    // Use embedding cosine similarity
+    const cosine = cosineSimilarity(aEmbed, bEmbed);
+    semanticScore = Math.max(0, cosine);
+  } else {
+    // Fallback: vocabulary Jaccard on vision fields
+    const aWords = extractWords(aVisionText);
+    const bWords = extractWords(bVisionText);
+    semanticScore = jaccard(aWords, bWords);
+  }
+
+  // --- Vocabulary boost (10%) ---
+  const aWords = extractWords(aVisionText);
+  const bWords = extractWords(bVisionText);
+  const vocabScore = jaccard(aWords, bWords);
+
+  // --- Combine ---
+  const rawScore = industryScore * 0.45 + segmentScore * 0.3 + semanticScore * 0.15 + vocabScore * 0.1;
+
+  const finalScore = rawScore * 100;
+
+  return Math.min(100, Math.max(0, Math.round(finalScore * 10) / 10));
 }
 
 // ============================================================================
-// 5. Values & Working Style (11%)
+// 5. Values & Working Style (15%)
+//
+// Measures alignment on 6 dimensions:
+//   1. Work pace preference (25%)
+//   2. Risk tolerance (20%)
+//   3. Equity philosophy (20%)
+//   4. Decision-making style (15%)
+//   5. Autonomy vs collaboration (10%)
+//   6. Work-life balance (10%)
 // ============================================================================
 export function scoreValues(a: FounderProfile, b: FounderProfile): number {
-  const extractSpeed = (profile: FounderProfile): string => {
-    const text = `${profile.urgency_level || ''} ${profile.working_style || ''}`.toLowerCase();
-    
-    if (text.includes('fast') || text.includes('quick') || text.includes('agile')) {
-      return 'fast';
-    }
-    if (text.includes('slow') || text.includes('deliberate') || text.includes('thorough')) {
-      return 'slow';
-    }
-    return 'medium';
-  };
+  const aProfile = extractValueProfile(a);
+  const bProfile = extractValueProfile(b);
 
-  const extractRiskTolerance = (profile: FounderProfile): string => {
-    const text = `${profile.working_style || ''} ${profile.equity_thoughts || ''}`.toLowerCase();
-    
-    if (text.includes('aggressive') || text.includes('high risk') || text.includes('bold')) {
-      return 'high';
-    }
-    if (text.includes('conservative') || text.includes('careful') || text.includes('low risk')) {
-      return 'low';
-    }
-    return 'medium';
-  };
+  // Score each dimension
+  const paceScore = scoreDimension(aProfile.pace, bProfile.pace);
+  const riskScore = scoreDimension(aProfile.risk, bProfile.risk);
+  const decisionScore = scoreDimension(aProfile.decision, bProfile.decision);
+  const autonomyScore = scoreDimension(aProfile.autonomy, bProfile.autonomy);
+  const worklifeScore = scoreDimension(aProfile.worklife, bProfile.worklife);
+  const equityScoreVal = scoreEquity(aProfile.equity, bProfile.equity);
 
-  const speedScores: Record<string, Record<string, number>> = {
-    'fast': { 'fast': 100, 'medium': 70, 'slow': 40 },
-    'medium': { 'fast': 70, 'medium': 100, 'slow': 70 },
-    'slow': { 'fast': 40, 'medium': 70, 'slow': 100 }
-  };
+  // Weighted combination
+  const rawScore =
+    paceScore * 0.25 +
+    riskScore * 0.2 +
+    equityScoreVal * 0.2 +
+    decisionScore * 0.15 +
+    autonomyScore * 0.1 +
+    worklifeScore * 0.1;
 
-  const riskScores: Record<string, Record<string, number>> = {
-    'high': { 'high': 100, 'medium': 75, 'low': 40 },
-    'medium': { 'high': 75, 'medium': 100, 'low': 75 },
-    'low': { 'high': 40, 'medium': 75, 'low': 100 }
-  };
-
-  const aSpeed = extractSpeed(a);
-  const bSpeed = extractSpeed(b);
-  const speedScore = speedScores[aSpeed]?.[bSpeed] || 60;
-
-  const aRisk = extractRiskTolerance(a);
-  const bRisk = extractRiskTolerance(b);
-  const riskScore = riskScores[aRisk]?.[bRisk] || 60;
-
-  return (speedScore + riskScore) / 2;
+  return Math.min(100, Math.max(0, Math.round(rawScore * 10) / 10));
 }
 
 // ============================================================================
 // 6. Geographic & Logistics (3%)
 // ============================================================================
 export function scoreGeo(a: FounderProfile, b: FounderProfile): number {
-  const parseLocation = (locationPref: string) => {
-    const lp = locationPref?.toLowerCase() || '';
-    
-    return {
-      city: extractCity(lp),
-      remoteOk: lp.includes('remote') || lp.includes('anywhere'),
-      willingToRelocate: lp.includes('relocate') || lp.includes('flexible')
-    };
-  };
+  // Cast to extended type
+  const aExt = a as FounderWithLocation;
+  const bExt = b as FounderWithLocation;
 
-  const extractCity = (text: string): string => {
-    const cityMatch = text.match(/(?:in|from|based in)\s+([a-z\s]+?)(?:,|$|\s+or\s+)/i);
-    return cityMatch?.[1]?.trim() || '';
-  };
+  const aLoc = aExt.location;
+  const bLoc = bExt.location;
 
-  const aLoc = parseLocation(a.location_preference || '');
-  const bLoc = parseLocation(b.location_preference || '');
+  // Get preferences - from location table if available, otherwise parse from text
+  const aPrefs = aLoc
+    ? {
+        remoteOk: aLoc.is_remote_ok,
+        remoteOnly: aLoc.is_remote_only,
+        willingToRelocate: aLoc.willing_to_relocate,
+      }
+    : parseLocationPrefsFromText(a.location_preference);
 
-  if (aLoc.city && bLoc.city && aLoc.city === bLoc.city) {
-    return 100;
+  const bPrefs = bLoc
+    ? {
+        remoteOk: bLoc.is_remote_ok,
+        remoteOnly: bLoc.is_remote_only,
+        willingToRelocate: bLoc.willing_to_relocate,
+      }
+    : parseLocationPrefsFromText(b.location_preference);
+
+  const bothRemoteOk = aPrefs.remoteOk && bPrefs.remoteOk;
+  const oneRemoteOk = aPrefs.remoteOk || bPrefs.remoteOk;
+  const oneWillingToRelocate = aPrefs.willingToRelocate || bPrefs.willingToRelocate;
+
+  // Check if we have coordinates for both
+  const aHasCoords = aLoc?.lat != null && aLoc?.lng != null;
+  const bHasCoords = bLoc?.lat != null && bLoc?.lng != null;
+
+  if (aHasCoords && bHasCoords) {
+    // ========== COORDINATE-BASED SCORING ==========
+    const distance = calculateDistanceKm(aLoc!.lat!, aLoc!.lng!, bLoc!.lat!, bLoc!.lng!);
+
+    let score = scoreDistance(distance);
+
+    // Timezone modifier for remote pairs
+    if (bothRemoteOk) {
+      score += getTimezoneModifier(aLoc!.timezone_offset, bLoc!.timezone_offset);
+    }
+
+    // Relocation bonus for distant locations
+    if (oneWillingToRelocate && distance > 500) {
+      score += 5;
+    }
+
+    return Math.min(100, Math.max(0, Math.round(score)));
   }
 
-  if (aLoc.remoteOk && bLoc.remoteOk) {
-    return 80;
+  // ========== FALLBACK SCORING ==========
+
+  if (aPrefs.remoteOnly && bPrefs.remoteOnly) {
+    return 75;
   }
 
-  if (aLoc.willingToRelocate || bLoc.willingToRelocate) {
-    return 60;
+  if (bothRemoteOk) {
+    // Try timezone scoring if available
+    const tzModifier = getTimezoneModifier(aLoc?.timezone_offset, bLoc?.timezone_offset);
+    return 70 + tzModifier;
   }
 
+  if (oneWillingToRelocate) {
+    return 65;
+  }
+
+  if (oneRemoteOk) {
+    return 50;
+  }
+
+  // No location data at all
+  if (!a.location_preference && !b.location_preference) {
+    return 50;
+  }
+
+  // Different locations, no flexibility
   return 30;
 }
 
@@ -267,50 +376,57 @@ export function scoreGeo(a: FounderProfile, b: FounderProfile): number {
 export function scoreAdvantages(a: FounderProfile, b: FounderProfile): number {
   const extractAdvantages = (profile: FounderProfile): Set<string> => {
     const advantages = new Set<string>();
-    
-    const text = `${profile.background || ''} ${profile.superpower || ''}`.toLowerCase();
-    
-    if (text.includes('expert') || text.includes('years in')) {
-      advantages.add('domain_expertise');
+
+    const text = `${profile.background || ""} ${profile.superpower || ""}`.toLowerCase();
+
+    // Domain expertise
+    if (text.includes("expert") || text.includes("years in")) {
+      advantages.add("domain_expertise");
     }
-    
-    if (text.includes('network') || text.includes('connections') || text.includes('contacts')) {
-      advantages.add('network');
+
+    // Network
+    if (text.includes("network") || text.includes("connections") || text.includes("contacts")) {
+      advantages.add("network");
     }
-    
-    if (text.includes('engineer') || text.includes('technical') || text.includes('developer')) {
-      advantages.add('technical');
+
+    // Technical depth
+    if (text.includes("engineer") || text.includes("technical") || text.includes("developer")) {
+      advantages.add("technical");
     }
-    
-    if (text.includes('sales') || text.includes('business') || text.includes('revenue')) {
-      advantages.add('business');
+
+    // Business/sales
+    if (text.includes("sales") || text.includes("business") || text.includes("revenue")) {
+      advantages.add("business");
     }
-    
+
+    // Founder experience
     if (profile.previous_founder) {
-      advantages.add('founder_experience');
+      advantages.add("founder_experience");
     }
-    
+
     return advantages;
   };
 
   const aAdvantages = extractAdvantages(a);
   const bAdvantages = extractAdvantages(b);
 
+  // If both have advantages
   if (aAdvantages.size > 0 && bAdvantages.size > 0) {
-    const overlap = Array.from(aAdvantages).filter(adv => bAdvantages.has(adv)).length;
-    
+    const overlap = Array.from(aAdvantages).filter((adv) => bAdvantages.has(adv)).length;
+
     if (overlap === 0) {
-      return 80;
+      return 80; // Completely different = great synergy
     } else if (overlap === 1) {
-      return 65;
+      return 65; // Some overlap = okay
     } else {
-      return 50;
+      return 50; // Too much overlap = less synergy
     }
   }
 
+  // If only one has advantages
   if (aAdvantages.size > 0 || bAdvantages.size > 0) {
     return 60;
   }
 
-  return 50;
+  return 50; // Neither has clear advantages
 }

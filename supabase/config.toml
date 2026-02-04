@@ -41,3 +41,6 @@ verify_jwt = true
 
 [functions.get-founder-matches]
 verify_jwt = true
+
+[functions.backfill-geocoding]
+verify_jwt = true

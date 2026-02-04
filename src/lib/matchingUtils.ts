@@ -1,11 +1,12 @@
 // src/lib/matchingUtils.ts
-// Manual scoring utilities for founder matching
-// AI embedding generation has been moved to edge functions for security
+// Matching utilities using the new 7-dimension scoring system
 
 import { supabase } from '@/integrations/supabase/client';
-import type { FounderProfile, MatchScore, AIMatchResult } from '@/types/founder';
+import { calculateMatchScore } from './matching/calculateMatch';
+import { checkDealbreakers } from './matching/dealbreakers';
+import type { FounderProfile, FounderProfileForMatching, AIMatchResult, MatchResult } from '@/types/founder';
 
-export type { FounderProfile, MatchScore, AIMatchResult };
+export type { FounderProfile, AIMatchResult, MatchResult };
 
 /**
  * Find AI-powered matches for a founder via edge function
@@ -39,8 +40,8 @@ export async function findAIMatches(
 }
 
 /**
- * HYBRID APPROACH: Combine AI embeddings with manual scoring
- * Fetches AI matches from edge function, then enhances with manual scoring for interpretability
+ * HYBRID APPROACH: Combine AI embeddings with new 7-dimension scoring
+ * Fetches AI matches from edge function, then applies dealbreakers and 7-dimension scoring
  */
 export async function findHybridMatches(
   founderId: string,
@@ -50,252 +51,178 @@ export async function findHybridMatches(
 ): Promise<AIMatchResult[]> {
   // 1. Get AI matches from edge function (secure)
   const aiMatches = await findAIMatches(founderId, threshold, limit);
+  
+  console.log('[findHybridMatches] AI matches from edge function:', aiMatches.length);
 
-  // 2. Enhance with manual scoring for interpretability
-  const enhancedMatches = aiMatches.map(match => {
-    const manualScore = calculateManualMatchScore(founderProfile, match as Partial<FounderProfile>);
-    return {
-      ...match,
-      manualScore,
+  // 2. Apply dealbreaker filtering and calculate new 7-dimension scores
+  const enhancedMatches: AIMatchResult[] = [];
+
+  for (const match of aiMatches) {
+    // Convert match to FounderProfileForMatching format
+    const matchProfile: FounderProfileForMatching & { id: string } = {
+      id: match.id,
+      core_skills: match.core_skills || null,
+      seeking_skills: match.seeking_skills || null,
+      superpower: match.superpower || null,
+      weaknesses_blindspots: match.weaknesses_blindspots || null,
+      stage: match.stage || null,
+      timeline_start: match.timeline_start || null,
+      urgency_level: match.urgency_level || null,
+      commitment_level: match.commitment_level || null,
+      working_style: match.working_style || null,
+      idea_description: match.idea_description || null,
+      problem_solving: match.problem_solving || null,
+      target_customer: match.target_customer || null,
+      embedding: match.embedding || null,
+      equity_thoughts: match.equity_thoughts || null,
+      location_preference: match.location_preference || null,
+      background: match.background || null,
+      previous_founder: match.previous_founder || null,
+      deal_breakers: match.deal_breakers || null,
+      non_negotiables: match.non_negotiables || null,
     };
-  });
 
-  // 3. Re-rank using weighted combination (70% AI, 30% manual)
+    const founderForMatching: FounderProfileForMatching & { id: string } = {
+      id: founderId,
+      core_skills: founderProfile.core_skills,
+      seeking_skills: founderProfile.seeking_skills,
+      superpower: founderProfile.superpower,
+      weaknesses_blindspots: founderProfile.weaknesses_blindspots,
+      stage: founderProfile.stage,
+      timeline_start: founderProfile.timeline_start,
+      urgency_level: founderProfile.urgency_level,
+      commitment_level: founderProfile.commitment_level,
+      working_style: founderProfile.working_style,
+      idea_description: founderProfile.idea_description,
+      problem_solving: founderProfile.problem_solving,
+      target_customer: founderProfile.target_customer,
+      embedding: founderProfile.embedding,
+      equity_thoughts: founderProfile.equity_thoughts,
+      location_preference: founderProfile.location_preference,
+      background: founderProfile.background,
+      previous_founder: founderProfile.previous_founder,
+      deal_breakers: founderProfile.deal_breakers,
+      non_negotiables: founderProfile.non_negotiables,
+    };
+
+    // Check dealbreakers both directions
+    const passesFounderDealbreakers = checkDealbreakers(founderForMatching, matchProfile);
+    const passesMatchDealbreakers = checkDealbreakers(matchProfile, founderForMatching);
+
+    if (!passesFounderDealbreakers || !passesMatchDealbreakers) {
+      console.log('[findHybridMatches] Match filtered by dealbreaker:', match.name || match.id);
+      continue; // Skip this match - dealbreaker failed
+    }
+
+    // Calculate new 7-dimension score (threshold 0 to see all matches)
+    const matchResult = calculateMatchScore(founderForMatching, matchProfile, 0);
+    console.log('[findHybridMatches] Calculated match score for:', match.name || match.id, matchResult?.total_score);
+
+    if (matchResult) {
+      enhancedMatches.push({
+        ...match,
+        matchResult,
+      });
+    } else {
+      console.warn('[findHybridMatches] matchResult was null for:', match.name || match.id);
+    }
+  }
+
+  console.log('[findHybridMatches] Enhanced matches after filtering:', enhancedMatches.length);
+
+  // 3. Re-rank using weighted combination (60% AI similarity, 40% 7-dimension score)
   const reranked = enhancedMatches
     .map(match => ({
       ...match,
-      combinedScore: (match.similarity * 0.7) + ((match.manualScore?.total || 0) / 100 * 0.3),
+      combinedScore: (match.similarity * 0.6) + ((match.matchResult?.total_score || 0) / 100 * 0.4),
     }))
-    .sort((a, b) => b.combinedScore - a.combinedScore)
+    .sort((a, b) => (b.combinedScore || 0) - (a.combinedScore || 0))
     .slice(0, 10);
 
+  console.log('[findHybridMatches] Final reranked matches:', reranked.length);
+  
   return reranked;
 }
 
 /**
- * Manual matching logic for interpretability
- * Explains WHY matches work with human-readable breakdown
+ * Calculate matches for a founder against a list of candidates
+ * Uses new 7-dimension scoring with dealbreaker filtering
  */
-function calculateManualMatchScore(
-  founderA: FounderProfile,
-  founderB: Partial<FounderProfile>
-): MatchScore {
-  const breakdown = {
-    skillsMatch: calculateSkillsScore(founderA, founderB),
-    locationFit: calculateLocationScore(founderA, founderB),
-    timelineFit: calculateTimelineScore(founderA, founderB),
-    workStyleFit: calculateWorkStyleScore(founderA, founderB),
+export function calculateAllMatchesForFounder(
+  founder: FounderProfile,
+  candidates: FounderProfile[]
+): Array<{ candidate: FounderProfile; matchResult: MatchResult }> {
+  const results: Array<{ candidate: FounderProfile; matchResult: MatchResult }> = [];
+
+  const founderForMatching: FounderProfileForMatching & { id: string } = {
+    id: founder.id,
+    core_skills: founder.core_skills,
+    seeking_skills: founder.seeking_skills,
+    superpower: founder.superpower,
+    weaknesses_blindspots: founder.weaknesses_blindspots,
+    stage: founder.stage,
+    timeline_start: founder.timeline_start,
+    urgency_level: founder.urgency_level,
+    commitment_level: founder.commitment_level,
+    working_style: founder.working_style,
+    idea_description: founder.idea_description,
+    problem_solving: founder.problem_solving,
+    target_customer: founder.target_customer,
+    embedding: founder.embedding,
+    equity_thoughts: founder.equity_thoughts,
+    location_preference: founder.location_preference,
+    background: founder.background,
+    previous_founder: founder.previous_founder,
+    deal_breakers: founder.deal_breakers,
+    non_negotiables: founder.non_negotiables,
   };
 
-  const total = Object.values(breakdown).reduce((sum, v) => sum + v, 0);
-  const { highlights, concerns } = generateInsights(founderA, founderB, breakdown);
+  for (const candidate of candidates) {
+    if (candidate.id === founder.id) continue;
 
-  return { total, breakdown, highlights, concerns };
-}
+    const candidateForMatching: FounderProfileForMatching & { id: string } = {
+      id: candidate.id,
+      core_skills: candidate.core_skills,
+      seeking_skills: candidate.seeking_skills,
+      superpower: candidate.superpower,
+      weaknesses_blindspots: candidate.weaknesses_blindspots,
+      stage: candidate.stage,
+      timeline_start: candidate.timeline_start,
+      urgency_level: candidate.urgency_level,
+      commitment_level: candidate.commitment_level,
+      working_style: candidate.working_style,
+      idea_description: candidate.idea_description,
+      problem_solving: candidate.problem_solving,
+      target_customer: candidate.target_customer,
+      embedding: candidate.embedding,
+      equity_thoughts: candidate.equity_thoughts,
+      location_preference: candidate.location_preference,
+      background: candidate.background,
+      previous_founder: candidate.previous_founder,
+      deal_breakers: candidate.deal_breakers,
+      non_negotiables: candidate.non_negotiables,
+    };
 
-function calculateSkillsScore(a: FounderProfile, b: Partial<FounderProfile>): number {
-  let score = 0;
-  const aSkillsForB = countSkillMatches(a.core_skills, b.seeking_skills);
-  const bSkillsForA = countSkillMatches(b.core_skills, a.seeking_skills);
-  score += Math.min(aSkillsForB * 10, 20);
-  score += Math.min(bSkillsForA * 10, 20);
-  return score;
-}
+    // Check dealbreakers both directions
+    const passesFounderDealbreakers = checkDealbreakers(founderForMatching, candidateForMatching);
+    const passesCandidateDealbreakers = checkDealbreakers(candidateForMatching, founderForMatching);
 
-function countSkillMatches(hasSkills: string[] | null | undefined, seekingSkills: string[] | null | undefined): number {
-  if (!hasSkills || !seekingSkills) return 0;
-  const normalizedHas = hasSkills.map(s => s.toLowerCase().trim());
-  const normalizedSeek = seekingSkills.map(s => s.toLowerCase().trim());
-  let matches = 0;
-  for (const seek of normalizedSeek) {
-    if (normalizedHas.some(has => skillsRelated(has, seek))) {
-      matches++;
+    if (!passesFounderDealbreakers || !passesCandidateDealbreakers) {
+      continue;
     }
-  }
-  return matches;
-}
 
-function skillsRelated(skillA: string, skillB: string): boolean {
-  if (skillA === skillB) return true;
-  if (skillA.includes(skillB) || skillB.includes(skillA)) return true;
-  const synonymGroups = [
-    ['tech', 'technical', 'engineering', 'developer', 'code', 'coding', 'software'],
-    ['design', 'ux', 'ui', 'product design', 'visual'],
-    ['sales', 'business development', 'bd', 'growth'],
-    ['marketing', 'growth', 'acquisition'],
-    ['ops', 'operations', 'strategy'],
-  ];
-  for (const group of synonymGroups) {
-    const aInGroup = group.some(syn => skillA.includes(syn));
-    const bInGroup = group.some(syn => skillB.includes(syn));
-    if (aInGroup && bInGroup) return true;
-  }
-  return false;
-}
-
-function calculateLocationScore(a: FounderProfile, b: Partial<FounderProfile>): number {
-  const locA = (a.location_preference || '').toLowerCase().trim();
-  const locB = (b.location_preference || '').toLowerCase().trim();
-
-  // No location specified
-  if (!locA || !locB) return 10;
-
-  // Both flexible/remote (perfect match)
-  if (isFlexible(locA) && isFlexible(locB)) return 25;
-  
-  // One is flexible (good match)
-  if (isFlexible(locA) || isFlexible(locB)) return 20;
-
-  // Exact match (case-insensitive)
-  if (locA === locB) return 25;
-
-  // Check if they share significant words (city, country, region)
-  return calculateLocationOverlap(locA, locB);
-}
-
-function calculateLocationOverlap(locA: string, locB: string): number {
-  // Remove common words that don't indicate location
-  const stopWords = ['area', 'region', 'open', 'to', 'in', 'the', 'or', 'and'];
-  
-  const wordsA = locA
-    .split(/[\s,]+/)
-    .filter(w => w.length > 2 && !stopWords.includes(w));
-  
-  const wordsB = locB
-    .split(/[\s,]+/)
-    .filter(w => w.length > 2 && !stopWords.includes(w));
-
-  // Count matching words
-  let matches = 0;
-  for (const wordA of wordsA) {
-    for (const wordB of wordsB) {
-      // Exact match
-      if (wordA === wordB) {
-        matches += 2; // Full match = 2 points
-      }
-      // Partial match (one contains the other)
-      else if (wordA.includes(wordB) || wordB.includes(wordA)) {
-        matches += 1; // Partial match = 1 point
-      }
+    const matchResult = calculateMatchScore(founderForMatching, candidateForMatching);
+    if (matchResult) {
+      results.push({ candidate, matchResult });
     }
   }
 
-  // Score based on overlap
-  const totalWords = Math.max(wordsA.length, wordsB.length);
-  const overlapRatio = matches / (totalWords * 2); // Normalize to 0-1
-
-  if (overlapRatio >= 0.8) return 25; // Very strong match
-  if (overlapRatio >= 0.5) return 20; // Good match
-  if (overlapRatio >= 0.3) return 15; // Decent match
-  if (overlapRatio >= 0.1) return 10; // Weak match
-  return 5; // No match
-}
-
-function isFlexible(loc: string): boolean {
-  const flexTerms = [
-    'remote', 'flexible', 'anywhere', 'open', 'any location',
-    'work from anywhere', 'location independent', 'global'
-  ];
-  return flexTerms.some(term => loc.includes(term));
-}
-
-function calculateTimelineScore(a: FounderProfile, b: Partial<FounderProfile>): number {
-  const timeA = (a.timeline_start || '').toLowerCase();
-  const timeB = (b.timeline_start || '').toLowerCase();
-  if (!timeA || !timeB) return 10;
-  const urgencyA = getUrgencyLevel(timeA);
-  const urgencyB = getUrgencyLevel(timeB);
-  const diff = Math.abs(urgencyA - urgencyB);
-  if (diff === 0) return 20;
-  if (diff === 1) return 15;
-  if (diff === 2) return 8;
-  return 4;
-}
-
-function getUrgencyLevel(timeline: string): number {
-  if (timeline.includes('now') || timeline.includes('asap') || timeline.includes('immediately')) return 4;
-  if (timeline.includes('month') || timeline.includes('soon')) return 3;
-  if (timeline.includes('quarter') || timeline.includes('few months')) return 2;
-  if (timeline.includes('year') || timeline.includes('exploring')) return 1;
-  return 2;
-}
-
-function calculateWorkStyleScore(a: FounderProfile, b: Partial<FounderProfile>): number {
-  let score = 7;
-  const styleA = (a.working_style || '').toLowerCase();
-  const styleB = (b.working_style || '').toLowerCase();
-  const styleTerms = ['iterative', 'agile', 'structured', 'flexible', 'fast', 'methodical'];
-  for (const term of styleTerms) {
-    if (styleA.includes(term) && styleB.includes(term)) {
-      score += 4;
-      break;
-    }
-  }
-  const commitA = (a.commitment_level || '').toLowerCase();
-  const commitB = (b.commitment_level || '').toLowerCase();
-  if (commitA && commitB) {
-    if (commitA.includes('full') && commitB.includes('full')) score += 4;
-    else if (commitA.includes('part') && commitB.includes('part')) score += 4;
-    else if (commitA.includes('flexible') || commitB.includes('flexible')) score += 2;
-  }
-  return Math.min(score, 15);
-}
-
-function generateInsights(
-  a: FounderProfile,
-  b: Partial<FounderProfile>,
-  breakdown: MatchScore['breakdown']
-): { highlights: string[]; concerns: string[] } {
-  const highlights: string[] = [];
-  const concerns: string[] = [];
-
-  if (breakdown.skillsMatch >= 30) {
-    highlights.push('Strong skills complementarity');
-  } else if (breakdown.skillsMatch >= 20) {
-    highlights.push('Good skills overlap');
-  } else if (breakdown.skillsMatch < 10) {
-    concerns.push('Limited skills match');
-  }
-
-  if (breakdown.locationFit >= 20) {
-    highlights.push('Location compatible');
-  } else if (breakdown.locationFit <= 5) {
-    concerns.push('Different locations');
-  }
-
-  if (breakdown.timelineFit >= 15) {
-    highlights.push('Aligned timelines');
-  } else if (breakdown.timelineFit < 10) {
-    concerns.push('Different urgency levels');
-  }
-
-  return { highlights, concerns };
+  return results.sort((a, b) => b.matchResult.total_score - a.matchResult.total_score);
 }
 
 export function getScoreTier(score: number): 'excellent' | 'good' | 'fair' | 'low' {
   if (score >= 75) return 'excellent';
-  if (score >= 55) return 'good';
-  if (score >= 35) return 'fair';
+  if (score >= 60) return 'good';
+  if (score >= 45) return 'fair';
   return 'low';
-}
-
-// Legacy function for backward compatibility
-export function calculateMatchScore(
-  founderA: FounderProfile,
-  founderB: FounderProfile
-): MatchScore {
-  return calculateManualMatchScore(founderA, founderB);
-}
-
-export function getMatchScoresForFounder(
-  founder: FounderProfile,
-  candidates: FounderProfile[]
-): Array<{ candidate: FounderProfile; score: MatchScore }> {
-  return candidates
-    .filter(c => c.id !== founder.id)
-    .map(candidate => ({
-      candidate,
-      score: calculateMatchScore(founder, candidate),
-    }))
-    .sort((a, b) => b.score.total - a.score.total);
 }
