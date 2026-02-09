@@ -75,5 +75,19 @@ export interface AIMatchResult extends FounderProfileForMatching {
   manualScore?: MatchScore;
 }
 
+// Match lifecycle status values
+export type MatchStatus =
+  | 'pending'
+  | 'notified_a'
+  | 'a_interested'
+  | 'notified_b'
+  | 'b_interested'
+  | 'both_interested'
+  | 'intro_sent'
+  | 'a_declined'
+  | 'b_declined'
+  | 'completed'
+  | 'expired';
+
 // Founder match record from database
 export type FounderMatch = Tables<'founder_matches'>;

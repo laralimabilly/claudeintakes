@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Eye, Users, Zap, RefreshCw } from "lucide-react";
+import { Eye, Users, Zap, RefreshCw, Send, Loader2 } from "lucide-react";
 import { MatchDetails } from "./MatchDetails";
 
 interface FounderMatch {
@@ -42,30 +42,37 @@ interface FounderMatch {
 
 type FilterType = "all" | "highly_compatible" | "somewhat_compatible";
 
+const STATUS_BADGES: Record<string, { label: string; className: string }> = {
+  pending: { label: "Pending", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
+  notified_a: { label: "Notified A", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  a_interested: { label: "A Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  notified_b: { label: "Notified B", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  b_interested: { label: "B Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  both_interested: { label: "Both Interested", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
+  intro_sent: { label: "Intro Sent", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
+  a_declined: { label: "A Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
+  b_declined: { label: "B Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
+  completed: { label: "Completed", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
+  expired: { label: "Expired", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
+};
+
 export const MatchesListView = () => {
   const [matches, setMatches] = useState<FounderMatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<FilterType>("all");
   const [selectedMatch, setSelectedMatch] = useState<FounderMatch | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [sendingMatchIds, setSendingMatchIds] = useState<Set<string>>(new Set());
+  const [isBulkSending, setIsBulkSending] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
     fetchMatches();
   }, []);
 
-  const getAuthToken = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    return session?.access_token;
-  };
-
   const fetchMatches = async () => {
     setIsLoading(true);
     try {
-      const token = await getAuthToken();
-      if (!token) throw new Error("Not authenticated");
-
-      // Fetch matches with founder profiles
       const { data, error } = await supabase
         .from("founder_matches")
         .select(`
@@ -88,7 +95,6 @@ export const MatchesListView = () => {
 
       if (error) throw error;
 
-      // Fetch founder names separately
       const founderIds = new Set<string>();
       (data || []).forEach((m) => {
         founderIds.add(m.founder_id);
@@ -137,9 +143,86 @@ export const MatchesListView = () => {
     return { total: matches.length, highlyCompatible, somewhatCompatible };
   }, [matches]);
 
+  const pendingHighMatches = useMemo(
+    () => matches.filter((m) => (!m.status || m.status === "pending") && m.total_score >= 75),
+    [matches]
+  );
+
   const handleViewDetails = (match: FounderMatch) => {
     setSelectedMatch(match);
     setIsDetailsOpen(true);
+  };
+
+  const handleSendNotification = async (match: FounderMatch) => {
+    setSendingMatchIds((prev) => new Set(prev).add(match.id));
+    try {
+      const { data, error } = await supabase.functions.invoke("send-whatsapp-intro", {
+        body: { matchId: match.id },
+      });
+
+      if (error) throw error;
+
+      const founderName = data?.notifiedFounder?.name || match.founder_a?.name || "Founder A";
+      toast({
+        title: "Notification sent",
+        description: `Match notification sent to ${founderName}`,
+      });
+      await fetchMatches();
+    } catch (error: any) {
+      console.error("Error sending notification:", error);
+      toast({
+        title: "Failed to send",
+        description: error.message || "Could not send match notification",
+        variant: "destructive",
+      });
+    } finally {
+      setSendingMatchIds((prev) => {
+        const next = new Set(prev);
+        next.delete(match.id);
+        return next;
+      });
+    }
+  };
+
+  const handleBulkNotify = async () => {
+    if (pendingHighMatches.length === 0) return;
+
+    setIsBulkSending(true);
+    let sent = 0;
+    let failed = 0;
+
+    for (const match of pendingHighMatches) {
+      try {
+        setSendingMatchIds((prev) => new Set(prev).add(match.id));
+
+        const { error } = await supabase.functions.invoke("send-whatsapp-intro", {
+          body: { matchId: match.id },
+        });
+
+        if (error) throw error;
+        sent++;
+      } catch {
+        failed++;
+      } finally {
+        setSendingMatchIds((prev) => {
+          const next = new Set(prev);
+          next.delete(match.id);
+          return next;
+        });
+      }
+
+      // 2-second delay between sends
+      if (match !== pendingHighMatches[pendingHighMatches.length - 1]) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+
+    setIsBulkSending(false);
+    toast({
+      title: "Bulk notify complete",
+      description: `${sent} sent, ${failed} failed`,
+    });
+    await fetchMatches();
   };
 
   const getScoreBadgeColor = (score: number) => {
@@ -147,6 +230,16 @@ export const MatchesListView = () => {
     if (score >= 70) return "bg-blue-500/20 text-blue-400 border-blue-500/30";
     if (score >= 60) return "bg-amber-500/20 text-amber-400 border-amber-500/30";
     return "bg-red-500/20 text-red-400 border-red-500/30";
+  };
+
+  const getStatusBadge = (status: string | null) => {
+    const key = status || "pending";
+    const config = STATUS_BADGES[key] || STATUS_BADGES.pending;
+    return (
+      <Badge variant="outline" className={`text-[10px] ${config.className}`}>
+        {config.label}
+      </Badge>
+    );
   };
 
   if (isLoading) {
@@ -171,15 +264,33 @@ export const MatchesListView = () => {
               {stats.total} total matches • {stats.highlyCompatible} highly compatible • {stats.somewhatCompatible} somewhat compatible
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={fetchMatches}
-            className="border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
-          >
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            {pendingHighMatches.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleBulkNotify}
+                disabled={isBulkSending}
+                className="border-emerald-500/30 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+              >
+                {isBulkSending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4 mr-2" />
+                )}
+                Notify All Pending ({pendingHighMatches.length})
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchMatches}
+              className="border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Filter Buttons */}
@@ -244,72 +355,92 @@ export const MatchesListView = () => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredMatches.map((match) => (
-                <TableRow 
-                  key={match.id} 
-                  className="border-white/5 hover:bg-white/[0.02] transition-colors"
-                >
-                  <TableCell>
-                    <div>
-                      <p className="text-sm text-white font-medium">
-                        {match.founder_a?.name || "Unknown"}
-                      </p>
-                      <p className="text-xs text-silver/40 line-clamp-1 max-w-48">
-                        {match.founder_a?.idea_description || "No description"}
-                      </p>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div>
-                      <p className="text-sm text-white font-medium">
-                        {match.founder_b?.name || "Unknown"}
-                      </p>
-                      <p className="text-xs text-silver/40 line-clamp-1 max-w-48">
-                        {match.founder_b?.idea_description || "No description"}
-                      </p>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Badge 
-                      variant="outline" 
-                      className={`text-xs font-medium ${getScoreBadgeColor(match.total_score)}`}
-                    >
-                      {Math.round(match.total_score)}%
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Badge 
-                      variant="outline" 
-                      className={`text-[10px] ${
-                        match.compatibility_level === 'highly_compatible'
-                          ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
-                          : 'border-amber-500/30 text-amber-400 bg-amber-500/10'
-                      }`}
-                    >
-                      {match.compatibility_level === 'highly_compatible' ? 'High' : 'Moderate'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Badge 
-                      variant="outline" 
-                      className="text-[10px] border-white/10 text-silver/60"
-                    >
-                      {match.status || 'pending'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleViewDetails(match)}
-                      className="text-silver/60 hover:text-white hover:bg-white/10"
-                    >
-                      <Eye className="h-4 w-4 mr-1" />
-                      Details
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {filteredMatches.map((match) => {
+                const isSending = sendingMatchIds.has(match.id);
+                const isPending = !match.status || match.status === "pending";
+
+                return (
+                  <TableRow 
+                    key={match.id} 
+                    className="border-white/5 hover:bg-white/[0.02] transition-colors"
+                  >
+                    <TableCell>
+                      <div>
+                        <p className="text-sm text-white font-medium">
+                          {match.founder_a?.name || "Unknown"}
+                        </p>
+                        <p className="text-xs text-silver/40 line-clamp-1 max-w-48">
+                          {match.founder_a?.idea_description || "No description"}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="text-sm text-white font-medium">
+                          {match.founder_b?.name || "Unknown"}
+                        </p>
+                        <p className="text-xs text-silver/40 line-clamp-1 max-w-48">
+                          {match.founder_b?.idea_description || "No description"}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge 
+                        variant="outline" 
+                        className={`text-xs font-medium ${getScoreBadgeColor(match.total_score)}`}
+                      >
+                        {Math.round(match.total_score)}%
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge 
+                        variant="outline" 
+                        className={`text-[10px] ${
+                          match.compatibility_level === 'highly_compatible'
+                            ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
+                            : 'border-amber-500/30 text-amber-400 bg-amber-500/10'
+                        }`}
+                      >
+                        {match.compatibility_level === 'highly_compatible' ? 'High' : 'Moderate'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-center">
+                      {getStatusBadge(match.status)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {isPending && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleSendNotification(match)}
+                            disabled={isSending}
+                            className="text-blue-400/70 hover:text-blue-400 hover:bg-blue-500/10"
+                          >
+                            {isSending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <>
+                                <Send className="h-4 w-4 mr-1" />
+                                Notify
+                              </>
+                            )}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleViewDetails(match)}
+                          className="text-silver/60 hover:text-white hover:bg-white/10"
+                        >
+                          <Eye className="h-4 w-4 mr-1" />
+                          Details
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}
@@ -331,6 +462,7 @@ export const MatchesListView = () => {
               match={{
                 total_score: selectedMatch.total_score,
                 compatibility_level: (selectedMatch.compatibility_level as 'highly_compatible' | 'somewhat_compatible') || 'somewhat_compatible',
+                status: selectedMatch.status,
                 dimension_scores: {
                   skills: selectedMatch.score_skills || 0,
                   stage: selectedMatch.score_stage || 0,

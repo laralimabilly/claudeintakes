@@ -1,12 +1,38 @@
+// supabase/functions/twilio-whatsapp-webhook/index.ts
+// ============================================================================
+// WhatsApp Webhook — State-aware message handler
+//
+// Flow:
+//   1. Verify Twilio signature
+//   2. Store incoming message
+//   3. Check if founder exists (if not → one-time registration message)
+//   4. Check conversation state:
+//      - If in match flow → handle state transitions
+//      - If IDLE or no state → AI chat
+// ============================================================================
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import OpenAI from "https://esm.sh/openai@4.20.1";
+import { sendWhatsAppMessage } from "../_shared/whatsapp/sendMessage.ts";
+import { generateMessage } from "../_shared/whatsapp/templates.ts";
+import {
+  getConversation,
+  getConversationByFounderId,
+  detectIntent,
+  getNextState,
+  transitionState,
+  resetToIdle,
+  setConversationState,
+  isInMatchFlow,
+} from "../_shared/whatsapp/conversationState.ts";
+import type { ConversationRecord, ConversationContext } from "../_shared/whatsapp/conversationState.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-// System prompt for co-founder matching agent
+const EMPTY_TWIML = `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
+
 const SYSTEM_PROMPT = `You are Line, an AI assistant helping entrepreneurs find their co-founder through the Line AI matching platform.
 
 WHO YOU ARE
@@ -114,7 +140,10 @@ When a match is strong: "This is an 87% match. You're aligned on the important s
 
 When they're being unrealistic: "You've declined 8 matches in a row. At some point, perfect becomes the enemy of good. What are you actually optimizing for?"`;
 
-// Helper to convert ArrayBuffer to base64
+// ---------------------------------------------------------------------------
+// Helpers: Twilio Signature Verification
+// ---------------------------------------------------------------------------
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -124,12 +153,11 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-// Verify Twilio signature using HMAC-SHA1
 async function verifyTwilioSignature(
   authToken: string,
   signature: string,
   url: string,
-  params: Record<string, string>,
+  params: Record<string, string>
 ): Promise<boolean> {
   const sortedKeys = Object.keys(params).sort();
   const paramString = sortedKeys.map((key) => key + params[key]).join("");
@@ -139,7 +167,9 @@ async function verifyTwilioSignature(
   const keyData = encoder.encode(authToken);
   const messageData = encoder.encode(data);
 
-  const cryptoKey = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw", keyData, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]
+  );
 
   const signatureBuffer = await crypto.subtle.sign("HMAC", cryptoKey, messageData);
   const expectedSignature = arrayBufferToBase64(signatureBuffer);
@@ -147,23 +177,24 @@ async function verifyTwilioSignature(
   return signature === expectedSignature;
 }
 
-// Check if phone number exists in founder_profiles
-async function checkFounderExists(supabase: any, phoneNumber: string): Promise<boolean> {
+// ---------------------------------------------------------------------------
+// Helpers: Founder lookup
+// ---------------------------------------------------------------------------
+
+async function getFounderByPhone(supabase: any, phoneNumber: string) {
   const { data, error } = await supabase
     .from("founder_profiles")
-    .select("id")
+    .select("id, name, phone_number, whatsapp, idea_description, core_skills, seeking_skills, stage, cofounder_type, location_preference, commitment_level, working_style, timeline_start, background, superpower, previous_founder")
     .eq("phone_number", phoneNumber)
     .maybeSingle();
 
   if (error) {
-    console.error("Error checking founder profile:", error);
-    return false;
+    console.error("Error fetching founder profile:", error);
+    return null;
   }
-
-  return !!data;
+  return data;
 }
 
-// Check if we've already sent the "not registered" message to this user
 async function hasReceivedNotRegisteredMessage(supabase: any, phoneNumber: string): Promise<boolean> {
   const { data, error } = await supabase
     .from("whatsapp_messages")
@@ -177,11 +208,13 @@ async function hasReceivedNotRegisteredMessage(supabase: any, phoneNumber: strin
     console.error("Error checking for not-registered message:", error);
     return false;
   }
-
   return (data || []).length > 0;
 }
 
-// Get conversation history for a user
+// ---------------------------------------------------------------------------
+// Helpers: Conversation history & AI
+// ---------------------------------------------------------------------------
+
 async function getConversationHistory(supabase: any, phoneNumber: string, limit = 10) {
   const { data, error } = await supabase
     .from("whatsapp_messages")
@@ -194,15 +227,15 @@ async function getConversationHistory(supabase: any, phoneNumber: string, limit 
     console.error("Error fetching conversation history:", error);
     return [];
   }
-
-  // Reverse to get chronological order
   return (data || []).reverse();
 }
 
-// Generate AI response using OpenAI
-async function generateAIResponse(userMessage: string, conversationHistory: any[]): Promise<string> {
+async function generateAIResponse(
+  userMessage: string,
+  conversationHistory: any[],
+  matchContextPrompt?: string
+): Promise<string> {
   const openaiApiKey = Deno.env.get("OPENAI_API_KEY");
-
   if (!openaiApiKey) {
     console.error("Missing OPENAI_API_KEY");
     return "Sorry, I'm having technical difficulties. Please try again later.";
@@ -211,10 +244,13 @@ async function generateAIResponse(userMessage: string, conversationHistory: any[
   const openai = new OpenAI({ apiKey: openaiApiKey });
 
   try {
-    // Build messages array from conversation history
-    const messages: any[] = [{ role: "system", content: SYSTEM_PROMPT }];
+    let systemContent = SYSTEM_PROMPT;
+    if (matchContextPrompt) {
+      systemContent += `\n\nCURRENT MATCH CONTEXT:\n${matchContextPrompt}`;
+    }
 
-    // Add conversation history (last 10 messages)
+    const messages: any[] = [{ role: "system", content: systemContent }];
+
     conversationHistory.forEach((msg: any) => {
       messages.push({
         role: msg.is_from_user ? "user" : "assistant",
@@ -222,17 +258,13 @@ async function generateAIResponse(userMessage: string, conversationHistory: any[
       });
     });
 
-    // Add current message
-    messages.push({
-      role: "user",
-      content: userMessage,
-    });
+    messages.push({ role: "user", content: userMessage });
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // Cost-effective for WhatsApp
-      messages: messages,
+      model: "gpt-4o-mini",
+      messages,
       temperature: 0.5,
-      max_tokens: 200, // Keep responses concise for WhatsApp
+      max_tokens: 200,
     });
 
     return completion.choices[0].message.content || "I'm not sure how to respond to that. Can you rephrase?";
@@ -242,211 +274,400 @@ async function generateAIResponse(userMessage: string, conversationHistory: any[
   }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers: Fetch match + profiles for state transitions
+// ---------------------------------------------------------------------------
+
+async function fetchMatchAndProfiles(supabase: any, matchId: string) {
+  const { data: match, error: matchError } = await supabase
+    .from("founder_matches")
+    .select("id, founder_id, matched_founder_id, total_score, compatibility_level, status, score_skills, score_stage, score_communication, score_vision, score_values, score_geo, score_advantages")
+    .eq("id", matchId)
+    .maybeSingle();
+
+  if (matchError || !match) {
+    console.error("Error fetching match:", matchError);
+    return null;
+  }
+
+  const { data: founders, error: foundersError } = await supabase
+    .from("founder_profiles")
+    .select("id, name, phone_number, whatsapp, idea_description, core_skills, seeking_skills, stage, cofounder_type, location_preference, commitment_level, working_style, timeline_start, background, superpower, previous_founder")
+    .in("id", [match.founder_id, match.matched_founder_id]);
+
+  if (foundersError || !founders || founders.length < 2) {
+    console.error("Error fetching founders:", foundersError);
+    return null;
+  }
+
+  return { match, founders };
+}
+
+function buildMatchData(match: any) {
+  return {
+    total_score: match.total_score,
+    compatibility_level: match.compatibility_level || (match.total_score >= 75 ? "highly_compatible" : "somewhat_compatible"),
+    score_skills: Number(match.score_skills) || 0,
+    score_stage: Number(match.score_stage) || 0,
+    score_communication: Number(match.score_communication) || 0,
+    score_vision: Number(match.score_vision) || 0,
+    score_values: Number(match.score_values) || 0,
+    score_geo: Number(match.score_geo) || 0,
+    score_advantages: Number(match.score_advantages) || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// State Machine Handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle a message from a founder who is in an active match flow.
+ * Returns the reply string, or null if the AI chat fallback should handle it.
+ */
+async function handleMatchFlowMessage(
+  supabase: any,
+  conversation: ConversationRecord,
+  messageBody: string,
+  phoneNumber: string
+): Promise<string | null> {
+  const intent = detectIntent(messageBody);
+  const nextState = getNextState(conversation.current_state, intent);
+  const ctx = conversation.context;
+
+  console.log(`[matchFlow] state=${conversation.current_state} intent=${intent} next=${nextState} match=${ctx.match_id}`);
+
+  // ---- No transition → fall through to AI with match context ----
+  if (nextState === null) {
+    return null;
+  }
+
+  // ---- MATCH_NOTIFIED + positive → MATCH_DETAILS_SENT ----
+  if (conversation.current_state === "MATCH_NOTIFIED" && nextState === "MATCH_DETAILS_SENT") {
+    if (!ctx.match_id) return null;
+
+    const result = await fetchMatchAndProfiles(supabase, ctx.match_id);
+    if (!result) return "Something went wrong pulling up the details. Give me a sec and try again.";
+
+    const { match, founders } = result;
+    const thisFounder = founders.find((f: any) => f.id === conversation.founder_id);
+    const otherFounder = founders.find((f: any) => f.id === ctx.other_founder_id);
+    if (!thisFounder || !otherFounder) return null;
+
+    const matchData = buildMatchData(match);
+    const templateName = matchData.compatibility_level === "highly_compatible"
+      ? "highly_compatible_details"
+      : "somewhat_compatible_details";
+
+    const reply = generateMessage(templateName, {
+      founder: thisFounder,
+      other: otherFounder,
+      match: matchData,
+    });
+
+    await transitionState(supabase, phoneNumber, "MATCH_DETAILS_SENT");
+    return reply;
+  }
+
+  // ---- MATCH_DETAILS_SENT + positive → INTRO_CONFIRMED ----
+  if (conversation.current_state === "MATCH_DETAILS_SENT" && nextState === "INTRO_CONFIRMED") {
+    if (!ctx.match_id || !ctx.other_founder_id) return null;
+
+    const result = await fetchMatchAndProfiles(supabase, ctx.match_id);
+    if (!result) return "Something went wrong. Give me a moment.";
+
+    const { match, founders } = result;
+    const thisFounder = founders.find((f: any) => f.id === conversation.founder_id);
+    const otherFounder = founders.find((f: any) => f.id === ctx.other_founder_id);
+    if (!thisFounder || !otherFounder) return null;
+
+    const matchData = buildMatchData(match);
+    const side = ctx.side || "a";
+
+    // Update this founder's interest
+    const interestCol = side === "a" ? "a_interested" : "b_interested";
+    await supabase
+      .from("founder_matches")
+      .update({ [interestCol]: true })
+      .eq("id", match.id);
+
+    // Check if OTHER founder already confirmed (side 'b' confirming after 'a')
+    const otherSide = side === "a" ? "b" : "a";
+    const otherInterestCol = otherSide === "a" ? "a_interested" : "b_interested";
+    const otherAlreadyInterested = match[otherInterestCol] === true;
+
+    if (otherAlreadyInterested) {
+      // BOTH interested!
+      await supabase
+        .from("founder_matches")
+        .update({ status: "both_interested" })
+        .eq("id", match.id);
+
+      // Send bothInterested to BOTH founders
+      const msgForThis = generateMessage("both_interested", { founder: thisFounder, other: otherFounder });
+      const msgForOther = generateMessage("both_interested", { founder: otherFounder, other: thisFounder });
+
+      const otherPhone = otherFounder.whatsapp || otherFounder.phone_number;
+
+      // Send to the other founder
+      await sendWhatsAppMessage({ to: otherPhone, body: msgForOther, supabase });
+
+      // Set both to INTRO_SENT
+      await transitionState(supabase, phoneNumber, "INTRO_SENT");
+      const otherConv = await getConversationByFounderId(supabase, otherFounder.id);
+      if (otherConv) {
+        await transitionState(supabase, otherConv.phone_number, "INTRO_SENT");
+      }
+
+      return msgForThis;
+    }
+
+    // Not both interested yet — notify the other founder (side 'b')
+    const introConfirmMsg = generateMessage("intro_confirmation", { founder: thisFounder, other: otherFounder });
+
+    // Now notify the OTHER founder with initial match template
+    const otherPhone = otherFounder.whatsapp || otherFounder.phone_number;
+    const otherTemplateName = matchData.total_score >= 75
+      ? "highly_compatible_initial"
+      : "somewhat_compatible_initial";
+
+    const otherMsg = generateMessage(otherTemplateName, {
+      founder: otherFounder,
+      other: thisFounder,
+      match: matchData,
+    });
+
+    await sendWhatsAppMessage({ to: otherPhone, body: otherMsg, supabase });
+
+    // Set other founder's state to MATCH_NOTIFIED
+    await setConversationState(supabase, {
+      founderId: otherFounder.id,
+      phoneNumber: otherPhone,
+      state: "MATCH_NOTIFIED",
+      context: {
+        match_id: match.id,
+        other_founder_id: thisFounder.id,
+        other_founder_name: thisFounder.name || "your match",
+        score: Math.round(match.total_score),
+        compatibility_level: matchData.compatibility_level,
+        side: "b",
+      },
+    });
+
+    // Update match status
+    await supabase
+      .from("founder_matches")
+      .update({ status: "notified_b" })
+      .eq("id", match.id);
+
+    // Set THIS founder to WAITING_FOR_OTHER
+    await transitionState(supabase, phoneNumber, "WAITING_FOR_OTHER");
+
+    return introConfirmMsg;
+  }
+
+  // ---- DECLINE flows (MATCH_NOTIFIED or MATCH_DETAILS_SENT + negative) ----
+  if (
+    (conversation.current_state === "MATCH_NOTIFIED" || conversation.current_state === "MATCH_DETAILS_SENT") &&
+    nextState === "DECLINE_FEEDBACK"
+  ) {
+    const side = ctx.side || "a";
+    const interestCol = side === "a" ? "a_interested" : "b_interested";
+
+    if (ctx.match_id) {
+      await supabase
+        .from("founder_matches")
+        .update({ [interestCol]: false })
+        .eq("id", ctx.match_id);
+    }
+
+    await transitionState(supabase, phoneNumber, "DECLINE_FEEDBACK");
+    return generateMessage("decline_feedback", { founder: { phone_number: phoneNumber } });
+  }
+
+  // ---- DECLINE_FEEDBACK + any → IDLE ----
+  if (conversation.current_state === "DECLINE_FEEDBACK" && nextState === "IDLE") {
+    const side = ctx.side || "a";
+    const declineStatus = side === "a" ? "a_declined" : "b_declined";
+
+    if (ctx.match_id) {
+      await supabase
+        .from("founder_matches")
+        .update({ status: declineStatus })
+        .eq("id", ctx.match_id);
+    }
+
+    // Notify the other founder if they were in WAITING_FOR_OTHER
+    if (ctx.other_founder_id) {
+      const otherConv = await getConversationByFounderId(supabase, ctx.other_founder_id);
+      if (otherConv && otherConv.current_state === "WAITING_FOR_OTHER") {
+        const { data: otherFounder } = await supabase
+          .from("founder_profiles")
+          .select("id, name, phone_number, whatsapp, idea_description, core_skills, seeking_skills, stage, cofounder_type, location_preference, commitment_level, working_style, timeline_start, background, superpower, previous_founder")
+          .eq("id", ctx.other_founder_id)
+          .maybeSingle();
+
+        const { data: thisFounder } = await supabase
+          .from("founder_profiles")
+          .select("id, name, phone_number, whatsapp")
+          .eq("id", conversation.founder_id)
+          .maybeSingle();
+
+        if (otherFounder && thisFounder) {
+          const declinedMsg = generateMessage("other_declined", {
+            founder: otherFounder,
+            other: thisFounder,
+          });
+          const otherPhone = otherFounder.whatsapp || otherFounder.phone_number;
+          await sendWhatsAppMessage({ to: otherPhone, body: declinedMsg, supabase });
+        }
+
+        await resetToIdle(supabase, otherConv.phone_number);
+      }
+    }
+
+    // Store decline reason in context before resetting
+    await transitionState(supabase, phoneNumber, "IDLE", { decline_reason: messageBody });
+    // Then fully reset
+    await resetToIdle(supabase, phoneNumber);
+
+    return generateMessage("decline_feedback", { founder: { phone_number: phoneNumber }, meta: {} });
+  }
+
+  // ---- FOLLOWUP_PENDING + any → IDLE ----
+  if (conversation.current_state === "FOLLOWUP_PENDING" && nextState === "IDLE") {
+    await resetToIdle(supabase, phoneNumber);
+    return "Thanks for the update. I'll keep looking for more matches for you.";
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Main Handler
+// ---------------------------------------------------------------------------
+
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" } });
   }
 
   try {
     const twilioAuthToken = Deno.env.get("TWILIO_AUTH_TOKEN");
-
     if (!twilioAuthToken) {
       console.error("Missing TWILIO_AUTH_TOKEN");
       return new Response("Server configuration error", { status: 500 });
     }
 
     const twilioSignature = req.headers.get("X-Twilio-Signature");
-
     if (!twilioSignature) {
-      console.warn("Missing X-Twilio-Signature header - rejecting request");
+      console.warn("Missing X-Twilio-Signature header");
       return new Response("Unauthorized: Missing signature", { status: 401 });
     }
 
+    // Parse form data
     const formData = await req.formData();
     const params: Record<string, string> = {};
     formData.forEach((value, key) => {
       params[key] = value.toString();
     });
 
+    // Verify signature
     const publicSupabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const webhookUrl = `${publicSupabaseUrl}/functions/v1/twilio-whatsapp-webhook`;
-
     const isValid = await verifyTwilioSignature(twilioAuthToken, twilioSignature, webhookUrl, params);
 
     if (!isValid) {
-      console.warn("Invalid Twilio signature - rejecting request");
+      console.warn("Invalid Twilio signature");
       return new Response("Forbidden: Invalid signature", { status: 403 });
     }
 
-    console.log("Twilio signature verified successfully");
+    console.log("Twilio signature verified");
 
     const body = params["Body"] || "";
     const from = params["From"] || "";
     const messageSid = params["MessageSid"] || "";
     const phoneNumber = from.replace("whatsapp:", "");
 
-    console.log("Incoming WhatsApp message:", {
-      Body: body,
-      From: from,
-      MessageSid: messageSid,
-      phoneNumber,
-    });
+    console.log("Incoming WhatsApp:", { Body: body, From: from, phoneNumber });
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Store the incoming user message
-    const { data, error: insertError } = await supabase
+    // Store incoming message
+    const { error: insertError } = await supabase
       .from("whatsapp_messages")
-      .insert([
-        {
-          phone_number: phoneNumber,
-          message_content: body,
-          twilio_message_sid: messageSid,
-          is_from_user: true, // Mark as user message
-          created_at: new Date().toISOString(),
-          processed: false,
-        },
-      ])
-      .select()
-      .single();
+      .insert([{
+        phone_number: phoneNumber,
+        message_content: body,
+        twilio_message_sid: messageSid,
+        is_from_user: true,
+        created_at: new Date().toISOString(),
+        processed: false,
+      }]);
 
     if (insertError) {
       console.error("Error storing message:", insertError);
-    } else {
-      console.log("Message stored successfully:", data?.id);
     }
 
-    // Check if this phone number has a founder profile
-    const founderExists = await checkFounderExists(supabase, phoneNumber);
+    // Check if founder exists
+    const founder = await getFounderByPhone(supabase, phoneNumber);
 
-    if (!founderExists) {
-      console.log("No founder profile found for phone:", phoneNumber);
+    if (!founder) {
+      console.log("No founder profile for:", phoneNumber);
 
-      // Check if we've already sent the "not registered" message
       const alreadyNotified = await hasReceivedNotRegisteredMessage(supabase, phoneNumber);
 
       if (!alreadyNotified) {
-        // Send one-time message with signup link
         const notRegisteredMessage =
           "Hey! 👋 I don't have a record of you in our system yet. To chat with me about finding a co-founder, please complete a quick intake call first at https://meetline.ai — then message me back!";
 
-        // Store the response
-        await supabase.from("whatsapp_messages").insert([
-          {
-            phone_number: phoneNumber,
-            message_content: notRegisteredMessage,
-            is_from_user: false,
-            created_at: new Date().toISOString(),
-            processed: true,
-          },
-        ]);
-
-        // Send via Twilio
-        const twilioAccountSid = Deno.env.get("TWILIO_ACCOUNT_SID")!;
-        const rawWhatsappNumber = Deno.env.get("TWILIO_WHATSAPP_NUMBER") || "+14243495938";
-        const twilioWhatsappNumber = rawWhatsappNumber.startsWith("whatsapp:")
-          ? rawWhatsappNumber
-          : `whatsapp:${rawWhatsappNumber}`;
-
-        const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-
-        const replyBody = new URLSearchParams({
-          To: from,
-          From: twilioWhatsappNumber,
-          Body: notRegisteredMessage,
-        });
-
-        await fetch(twilioUrl, {
-          method: "POST",
-          headers: {
-            Authorization: "Basic " + btoa(`${twilioAccountSid}:${twilioAuthToken}`),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: replyBody.toString(),
-        });
-
-        console.log("Sent not-registered message to:", phoneNumber);
+        await sendWhatsAppMessage({ to: from, body: notRegisteredMessage, supabase });
       } else {
-        console.log("Already notified this user, ignoring message from:", phoneNumber);
+        console.log("Already notified, ignoring:", phoneNumber);
       }
 
-      // Return empty TwiML - don't engage further
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
-      return new Response(twiml, {
-        status: 200,
-        headers: { "Content-Type": "application/xml" },
-      });
+      return new Response(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "application/xml" } });
     }
 
-    // Founder exists - proceed with AI conversation
-    const conversationHistory = await getConversationHistory(supabase, phoneNumber);
+    // ---- State-aware handling ----
+    const conversation = await getConversation(supabase, phoneNumber);
 
-    // Generate AI response
+    if (conversation && isInMatchFlow(conversation.current_state)) {
+      console.log(`[matchFlow] Founder ${founder.id} in state ${conversation.current_state}`);
+
+      const matchFlowReply = await handleMatchFlowMessage(supabase, conversation, body, phoneNumber);
+
+      if (matchFlowReply) {
+        // Send the state machine response
+        await sendWhatsAppMessage({ to: from, body: matchFlowReply, supabase });
+
+        return new Response(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "application/xml" } });
+      }
+
+      // matchFlowReply is null → question intent, fall through to AI with context
+      console.log("[matchFlow] No transition, falling through to AI with match context");
+
+      const matchContextPrompt = `The user is currently in a match flow. They were shown a match with ${conversation.context.other_founder_name || "another founder"} (score: ${conversation.context.score || "unknown"}%). Current state: ${conversation.current_state}. Answer their question about this match using the data available. If they seem to be asking a yes/no question about the match, guide them to respond with a clear yes or no.`;
+
+      const conversationHistory = await getConversationHistory(supabase, phoneNumber);
+      const aiResponse = await generateAIResponse(body, conversationHistory, matchContextPrompt);
+
+      await sendWhatsAppMessage({ to: from, body: aiResponse, supabase });
+
+      return new Response(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "application/xml" } });
+    }
+
+    // ---- IDLE or no state: standard AI chat ----
+    const conversationHistory = await getConversationHistory(supabase, phoneNumber);
     const aiResponse = await generateAIResponse(body, conversationHistory);
 
-    // Store the AI response in database
-    await supabase.from("whatsapp_messages").insert([
-      {
-        phone_number: phoneNumber,
-        message_content: aiResponse,
-        is_from_user: false,
-        created_at: new Date().toISOString(),
-        processed: true,
-      },
-    ]);
+    await sendWhatsAppMessage({ to: from, body: aiResponse, supabase });
 
-    // Send reply via Twilio API
-    const twilioAccountSid = Deno.env.get("TWILIO_ACCOUNT_SID")!;
-    const rawWhatsappNumber = Deno.env.get("TWILIO_WHATSAPP_NUMBER") || "+14243495938";
-    const twilioWhatsappNumber = rawWhatsappNumber.startsWith("whatsapp:")
-      ? rawWhatsappNumber
-      : `whatsapp:${rawWhatsappNumber}`;
-
-    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-
-    const replyBody = new URLSearchParams({
-      To: from,
-      From: twilioWhatsappNumber,
-      Body: aiResponse,
-    });
-
-    const twilioResponse = await fetch(twilioUrl, {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + btoa(`${twilioAccountSid}:${twilioAuthToken}`),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: replyBody.toString(),
-    });
-
-    if (!twilioResponse.ok) {
-      const errorText = await twilioResponse.text();
-      console.error("Twilio API error:", errorText);
-    } else {
-      const replyData = await twilioResponse.json();
-      console.log("Reply sent successfully:", replyData.sid);
-    }
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
-
-    return new Response(twiml, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/xml",
-      },
-    });
+    return new Response(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "application/xml" } });
   } catch (error) {
     console.error("Error processing webhook:", error);
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
-    return new Response(twiml, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/xml",
-      },
-    });
+    return new Response(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "application/xml" } });
   }
 });

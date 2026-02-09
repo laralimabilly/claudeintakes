@@ -340,6 +340,44 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_conversations: {
+        Row: {
+          context: Json
+          created_at: string
+          current_state: string
+          founder_id: string
+          id: string
+          last_message_at: string
+          phone_number: string
+        }
+        Insert: {
+          context?: Json
+          created_at?: string
+          current_state?: string
+          founder_id: string
+          id?: string
+          last_message_at?: string
+          phone_number: string
+        }
+        Update: {
+          context?: Json
+          created_at?: string
+          current_state?: string
+          founder_id?: string
+          id?: string
+          last_message_at?: string
+          phone_number?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "whatsapp_conversations_founder_id_fkey"
+            columns: ["founder_id"]
+            isOneToOne: false
+            referencedRelation: "founder_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       whatsapp_messages: {
         Row: {
           created_at: string

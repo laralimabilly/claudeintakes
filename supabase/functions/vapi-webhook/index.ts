@@ -1,6 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
 import { Resend } from "https://esm.sh/resend@4.0.0";
+import { sendWhatsAppMessage } from "../_shared/whatsapp/sendMessage.ts";
+import { generateMessage } from "../_shared/whatsapp/templates.ts";
+import { setConversationState } from "../_shared/whatsapp/conversationState.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -312,6 +315,36 @@ serve(async (req) => {
       console.log('Triggered matching computation for founder:', data.id);
     } catch (matchingError) {
       console.error('Error triggering matching:', matchingError);
+      // Don't fail the webhook
+    }
+
+    // Send WhatsApp onboarding confirmation (with delay so they're off the call)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const whatsappPhone = profileData.whatsapp || profileData.phone_number;
+      const onboardingMsg = generateMessage("onboarding_confirmation", { founder: profileData });
+
+      const sendResult = await sendWhatsAppMessage({
+        to: whatsappPhone,
+        body: onboardingMsg,
+        supabase,
+      });
+
+      if (sendResult.success) {
+        console.log("Onboarding WhatsApp sent to", whatsappPhone);
+
+        // Initialize conversation state to IDLE
+        await setConversationState(supabase, {
+          founderId: data.id,
+          phoneNumber: whatsappPhone,
+          state: "IDLE",
+        });
+      } else {
+        console.error("Failed to send onboarding WhatsApp:", sendResult.error);
+      }
+    } catch (waError) {
+      console.error("Failed to send onboarding WhatsApp:", waError);
       // Don't fail the webhook
     }
 

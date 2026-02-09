@@ -1,18 +1,19 @@
+// supabase/functions/send-whatsapp-intro/index.ts
+// ============================================================================
+// Sends WhatsApp match notification to Founder A (the one who joined first).
+// Accepts { matchId } or legacy { founderIds: [id1, id2] }.
+// ============================================================================
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sendWhatsAppMessage } from "../_shared/whatsapp/sendMessage.ts";
+import { generateMessage } from "../_shared/whatsapp/templates.ts";
+import { setConversationState } from "../_shared/whatsapp/conversationState.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
-
-interface SendWhatsAppRequest {
-  founderIds: string[];
-}
-
-interface VapiCallResponse {
-  id: string;
-  status: string;
-}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -24,7 +25,7 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-    // Get the JWT from the Authorization header
+    // --- Auth check ---
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(
@@ -33,150 +34,173 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Verify the user's JWT and get their user ID
     const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
+      global: { headers: { Authorization: authHeader } },
     });
-    
+
     const { data: { user }, error: userError } = await userClient.auth.getUser();
     if (userError || !user) {
-      console.error("Auth error:", userError);
       return new Response(
         JSON.stringify({ error: "Invalid or expired token" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
       );
     }
 
-    // Use service role to check if user has admin role
     const serviceClient = createClient(supabaseUrl, supabaseServiceKey);
-    
-    const { data: hasAdminRole, error: roleError } = await serviceClient
-      .rpc('has_role', { _user_id: user.id, _role: 'admin' });
 
-    if (roleError) {
-      console.error("Role check error:", roleError);
-      return new Response(
-        JSON.stringify({ error: "Failed to verify permissions" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
-      );
-    }
+    const { data: hasAdminRole, error: roleError } = await serviceClient.rpc("has_role", {
+      _user_id: user.id,
+      _role: "admin",
+    });
 
-    if (!hasAdminRole) {
+    if (roleError || !hasAdminRole) {
       return new Response(
         JSON.stringify({ error: "Insufficient permissions. Admin role required." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 403 }
       );
     }
 
-    // User is authenticated and has admin role - proceed
-    const { founderIds }: SendWhatsAppRequest = await req.json();
+    // --- Parse request ---
+    const body = await req.json();
+    let matchId: string | undefined = body.matchId;
+    const founderIds: string[] | undefined = body.founderIds;
 
-    if (!founderIds || !Array.isArray(founderIds) || founderIds.length === 0) {
+    // Legacy: if founderIds passed with exactly 2, look up or create match
+    if (!matchId && founderIds && Array.isArray(founderIds) && founderIds.length === 2) {
+      const { data: existingMatch } = await serviceClient
+        .from("founder_matches")
+        .select("id")
+        .or(
+          `and(founder_id.eq.${founderIds[0]},matched_founder_id.eq.${founderIds[1]}),and(founder_id.eq.${founderIds[1]},matched_founder_id.eq.${founderIds[0]})`
+        )
+        .maybeSingle();
+
+      if (existingMatch) {
+        matchId = existingMatch.id;
+      } else {
+        return new Response(
+          JSON.stringify({ error: "No match found between these two founders. Run compute-matches first." }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 404 }
+        );
+      }
+    }
+
+    if (!matchId) {
       return new Response(
-        JSON.stringify({ error: "founderIds array is required" }),
+        JSON.stringify({ error: "matchId is required (or founderIds with exactly 2 IDs)" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
       );
     }
 
-    const vapiApiKey = Deno.env.get("VAPI_API_KEY");
-    const vapiAssistantId = Deno.env.get("VAPI_ASSISTANT_ID");
-    const vapiPhoneNumberId = Deno.env.get("VAPI_PHONE_NUMBER_ID");
+    // --- Fetch match record ---
+    const { data: match, error: matchError } = await serviceClient
+      .from("founder_matches")
+      .select(
+        "id, founder_id, matched_founder_id, total_score, compatibility_level, status, score_skills, score_stage, score_communication, score_vision, score_values, score_geo, score_advantages"
+      )
+      .eq("id", matchId)
+      .maybeSingle();
 
-    if (!vapiApiKey || !vapiAssistantId || !vapiPhoneNumberId) {
-      console.error("Missing Vapi configuration");
+    if (matchError || !match) {
       return new Response(
-        JSON.stringify({ error: "Server configuration error" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
-      );
-    }
-
-    // Fetch the founder profiles
-    const { data: founders, error: fetchError } = await serviceClient
-      .from("founder_profiles")
-      .select("id, whatsapp, phone_number")
-      .in("id", founderIds);
-
-    if (fetchError) {
-      console.error("Error fetching founders:", fetchError);
-      throw fetchError;
-    }
-
-    if (!founders || founders.length === 0) {
-      return new Response(
-        JSON.stringify({ error: "No founders found with the provided IDs" }),
+        JSON.stringify({ error: "Match not found" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 404 }
       );
     }
 
-    const results: { founderId: string; success: boolean; callId?: string; error?: string }[] = [];
+    // --- Fetch both founder profiles ---
+    const { data: founders, error: foundersError } = await serviceClient
+      .from("founder_profiles")
+      .select(
+        "id, name, phone_number, whatsapp, idea_description, core_skills, seeking_skills, stage, cofounder_type, location_preference, commitment_level, working_style, timeline_start, background, superpower, previous_founder, created_at"
+      )
+      .in("id", [match.founder_id, match.matched_founder_id]);
 
-    for (const founder of founders) {
-      const phoneNumber = founder.whatsapp || founder.phone_number;
-      
-      if (!phoneNumber) {
-        results.push({
-          founderId: founder.id,
-          success: false,
-          error: "No phone number available"
-        });
-        continue;
-      }
-
-      try {
-        console.log(`Initiating WhatsApp call to ${phoneNumber} for founder ${founder.id}`);
-        
-        const vapiResponse = await fetch("https://api.vapi.ai/call/phone", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${vapiApiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            assistantId: vapiAssistantId,
-            phoneNumberId: vapiPhoneNumberId,
-            customer: {
-              number: phoneNumber,
-            },
-          }),
-        });
-
-        if (!vapiResponse.ok) {
-          const errorText = await vapiResponse.text();
-          console.error(`Vapi API error for founder ${founder.id}:`, errorText);
-          results.push({
-            founderId: founder.id,
-            success: false,
-            error: `Vapi API error: ${vapiResponse.status}`
-          });
-          continue;
-        }
-
-        const vapiData: VapiCallResponse = await vapiResponse.json();
-        console.log(`Successfully initiated call ${vapiData.id} for founder ${founder.id}`);
-
-        // Update the founder's status to 'contacted'
-        await serviceClient
-          .from("founder_profiles")
-          .update({ status: 'contacted' })
-          .eq("id", founder.id);
-
-        results.push({
-          founderId: founder.id,
-          success: true,
-          callId: vapiData.id
-        });
-      } catch (callError) {
-        console.error(`Error calling founder ${founder.id}:`, callError);
-        results.push({
-          founderId: founder.id,
-          success: false,
-          error: callError instanceof Error ? callError.message : "Unknown error"
-        });
-      }
+    if (foundersError || !founders || founders.length < 2) {
+      return new Response(
+        JSON.stringify({ error: "Could not fetch both founder profiles" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 404 }
+      );
     }
 
+    // --- Determine notification order: older created_at = Founder A ---
+    const sorted = founders.sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+    const founderA = sorted[0];
+    const founderB = sorted[1];
+    const sideA = founderA.id === match.founder_id ? "a" : "b";
+
+    // --- Pick template based on score ---
+    const score = Math.round(match.total_score);
+    const compatLevel =
+      match.compatibility_level || (score >= 75 ? "highly_compatible" : "somewhat_compatible");
+
+    const templateName =
+      score >= 75 ? "highly_compatible_initial" : "somewhat_compatible_initial";
+
+    const matchData = {
+      total_score: match.total_score,
+      compatibility_level: compatLevel,
+      score_skills: Number(match.score_skills) || 0,
+      score_stage: Number(match.score_stage) || 0,
+      score_communication: Number(match.score_communication) || 0,
+      score_vision: Number(match.score_vision) || 0,
+      score_values: Number(match.score_values) || 0,
+      score_geo: Number(match.score_geo) || 0,
+      score_advantages: Number(match.score_advantages) || 0,
+    };
+
+    const messageBody = generateMessage(templateName, {
+      founder: founderA,
+      other: founderB,
+      match: matchData,
+    });
+
+    // --- Send WhatsApp message to Founder A ---
+    const phoneNumber = founderA.whatsapp || founderA.phone_number;
+
+    const sendResult = await sendWhatsAppMessage({
+      to: phoneNumber,
+      body: messageBody,
+      supabase: serviceClient,
+    });
+
+    if (!sendResult.success) {
+      return new Response(
+        JSON.stringify({ error: `Failed to send WhatsApp: ${sendResult.error}` }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
+      );
+    }
+
+    // --- Set conversation state to MATCH_NOTIFIED ---
+    await setConversationState(serviceClient, {
+      founderId: founderA.id,
+      phoneNumber,
+      state: "MATCH_NOTIFIED",
+      context: {
+        match_id: match.id,
+        other_founder_id: founderB.id,
+        other_founder_name: founderB.name || "your match",
+        score,
+        compatibility_level: compatLevel,
+        side: sideA,
+      },
+    });
+
+    // --- Update match record ---
+    await serviceClient
+      .from("founder_matches")
+      .update({ status: "notified_a", notified_at: new Date().toISOString() })
+      .eq("id", match.id);
+
     return new Response(
-      JSON.stringify({ results }),
+      JSON.stringify({
+        success: true,
+        notifiedFounder: { id: founderA.id, name: founderA.name },
+        matchId: match.id,
+        score,
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
     );
   } catch (error) {

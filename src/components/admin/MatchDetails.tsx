@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import type { MatchStatus } from "@/types/founder";
 
 interface DimensionScores {
   skills: number;
@@ -17,6 +18,7 @@ interface MatchDetailsProps {
     total_score: number;
     compatibility_level: 'highly_compatible' | 'somewhat_compatible';
     dimension_scores: DimensionScores;
+    status?: string | null;
   };
 }
 
@@ -42,8 +44,24 @@ const getScoreTextColor = (score: number): string => {
   return 'text-red-400';
 };
 
+const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
+  pending: { label: "Pending", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
+  notified_a: { label: "Notified A", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  a_interested: { label: "A Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  notified_b: { label: "Notified B", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  b_interested: { label: "B Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
+  both_interested: { label: "Both Interested", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
+  intro_sent: { label: "Intro Sent", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
+  a_declined: { label: "A Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
+  b_declined: { label: "B Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
+  completed: { label: "Completed", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
+  expired: { label: "Expired", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
+};
+
 export const MatchDetails = ({ match }: MatchDetailsProps) => {
-  const { total_score, compatibility_level, dimension_scores } = match;
+  const { total_score, compatibility_level, dimension_scores, status } = match;
+  const statusKey = status || 'pending';
+  const statusConfig = STATUS_CONFIG[statusKey] || STATUS_CONFIG.pending;
 
   return (
     <Card className="bg-white/[0.02] border-white/10">
@@ -51,6 +69,12 @@ export const MatchDetails = ({ match }: MatchDetailsProps) => {
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg font-light text-white">Match Analysis</CardTitle>
           <div className="flex items-center gap-2">
+            <Badge 
+              variant="outline" 
+              className={`text-xs ${statusConfig.className}`}
+            >
+              {statusConfig.label}
+            </Badge>
             <Badge 
               variant="outline" 
               className={`text-xs ${
