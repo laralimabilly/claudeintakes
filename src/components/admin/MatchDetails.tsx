@@ -1,7 +1,11 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import type { MatchStatus } from "@/types/founder";
+import { Button } from "@/components/ui/button";
+import { StatusBadge } from "./StatusBadge";
+import { canNotify, isActive } from "@/types/matchStatus";
+import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
+import { Send, Loader2, Check } from "lucide-react";
 
 interface DimensionScores {
   skills: number;
@@ -15,11 +19,13 @@ interface DimensionScores {
 
 interface MatchDetailsProps {
   match: {
+    id?: string;
     total_score: number;
     compatibility_level: 'highly_compatible' | 'somewhat_compatible';
     dimension_scores: DimensionScores;
     status?: string | null;
   };
+  onStatusChange?: () => void;
 }
 
 const DIMENSION_CONFIG = [
@@ -30,6 +36,15 @@ const DIMENSION_CONFIG = [
   { key: 'values', label: 'Working Values', weight: 11 },
   { key: 'geo', label: 'Geographic Fit', weight: 3 },
   { key: 'advantages', label: 'Advantage Synergy', weight: 2 },
+] as const;
+
+const STEPPER_STEPS = [
+  { key: 'notified_a', label: 'Notified A' },
+  { key: 'a_interested', label: 'A Interested' },
+  { key: 'notified_b', label: 'Notified B' },
+  { key: 'b_interested', label: 'B Interested' },
+  { key: 'both_interested', label: 'Both Interested' },
+  { key: 'intro_sent', label: 'Intro Sent' },
 ] as const;
 
 const getScoreColor = (score: number): string => {
@@ -44,24 +59,79 @@ const getScoreTextColor = (score: number): string => {
   return 'text-red-400';
 };
 
-const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  pending: { label: "Pending", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
-  notified_a: { label: "Notified A", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  a_interested: { label: "A Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  notified_b: { label: "Notified B", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  b_interested: { label: "B Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  both_interested: { label: "Both Interested", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  intro_sent: { label: "Intro Sent", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  a_declined: { label: "A Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
-  b_declined: { label: "B Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
-  completed: { label: "Completed", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  expired: { label: "Expired", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
-};
+function MatchStepper({ status }: { status: string }) {
+  const currentIndex = STEPPER_STEPS.findIndex((s) => s.key === status);
 
-export const MatchDetails = ({ match }: MatchDetailsProps) => {
-  const { total_score, compatibility_level, dimension_scores, status } = match;
+  return (
+    <div className="flex items-center gap-1 overflow-x-auto py-3">
+      {STEPPER_STEPS.map((step, i) => {
+        const isPast = currentIndex > i;
+        const isCurrent = currentIndex === i;
+        const isFuture = currentIndex < i;
+
+        return (
+          <div key={step.key} className="flex items-center">
+            {i > 0 && (
+              <div
+                className={`w-4 h-px mx-0.5 ${isPast ? 'bg-emerald-500/60' : 'bg-white/10'}`}
+              />
+            )}
+            <div className="flex flex-col items-center gap-1 min-w-[56px]">
+              <div
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-medium border ${
+                  isPast
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                    : isCurrent
+                    ? 'bg-blue-500/20 border-blue-400 text-blue-400 ring-1 ring-blue-400/30'
+                    : 'bg-white/5 border-white/10 text-silver/30'
+                }`}
+              >
+                {isPast ? <Check className="h-3 w-3" /> : i + 1}
+              </div>
+              <span
+                className={`text-[9px] text-center leading-tight ${
+                  isCurrent ? 'text-blue-400 font-medium' : isPast ? 'text-emerald-400/60' : 'text-silver/30'
+                }`}
+              >
+                {step.label}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export const MatchDetails = ({ match, onStatusChange }: MatchDetailsProps) => {
+  const { total_score, compatibility_level, dimension_scores, status, id } = match;
   const statusKey = status || 'pending';
-  const statusConfig = STATUS_CONFIG[statusKey] || STATUS_CONFIG.pending;
+  const [isSending, setIsSending] = useState(false);
+  const { toast } = useToast();
+
+  const handleSendNotification = async () => {
+    if (!id) return;
+    setIsSending(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("send-whatsapp-intro", {
+        body: { matchId: id },
+      });
+      if (error) throw error;
+      toast({
+        title: "Notification sent",
+        description: `Match notification sent to ${data?.notifiedFounder?.name || "Founder A"}`,
+      });
+      onStatusChange?.();
+    } catch (error: any) {
+      toast({
+        title: "Failed to send",
+        description: error.message || "Could not send match notification",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   return (
     <Card className="bg-white/[0.02] border-white/10">
@@ -69,36 +139,53 @@ export const MatchDetails = ({ match }: MatchDetailsProps) => {
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg font-light text-white">Match Analysis</CardTitle>
           <div className="flex items-center gap-2">
-            <Badge 
-              variant="outline" 
-              className={`text-xs ${statusConfig.className}`}
-            >
-              {statusConfig.label}
-            </Badge>
-            <Badge 
-              variant="outline" 
-              className={`text-xs ${
+            <StatusBadge status={statusKey} />
+            <span
+              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                 compatibility_level === 'highly_compatible'
-                  ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
-                  : 'border-amber-500/30 text-amber-400 bg-amber-500/10'
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : 'bg-amber-500/20 text-amber-400'
               }`}
             >
               {compatibility_level === 'highly_compatible' ? 'Highly Compatible' : 'Compatible'}
-            </Badge>
+            </span>
           </div>
         </div>
         
         {/* Overall Score */}
-        <div className="flex items-center gap-4 mt-4">
-          <div 
-            className={`text-4xl font-bold ${getScoreTextColor(total_score)}`}
-          >
-            {Math.round(total_score)}%
+        <div className="flex items-center justify-between mt-4">
+          <div className="flex items-center gap-4">
+            <div className={`text-4xl font-bold ${getScoreTextColor(total_score)}`}>
+              {Math.round(total_score)}%
+            </div>
+            <div className="text-sm text-silver/50">Overall Match Score</div>
           </div>
-          <div className="text-sm text-silver/50">
-            Overall Match Score
-          </div>
+
+          {/* Send Notification button for pending matches */}
+          {canNotify(statusKey) && id && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSendNotification}
+              disabled={isSending}
+              className="border-blue-500/30 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+            >
+              {isSending ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4 mr-1.5" />
+              )}
+              Send Notification
+            </Button>
+          )}
         </div>
+
+        {/* Stepper for active flow */}
+        {isActive(statusKey) && (
+          <div className="mt-3 pt-3 border-t border-white/5">
+            <MatchStepper status={statusKey} />
+          </div>
+        )}
       </CardHeader>
 
       <CardContent className="space-y-4">

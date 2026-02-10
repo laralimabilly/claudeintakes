@@ -4,7 +4,7 @@ import { ProfilesView } from "./ProfilesView";
 import { MatchingView } from "./MatchingView";
 import { MatchesListView } from "./MatchesListView";
 import { ToolsView } from "./ToolsView";
-import { WhatsAppView } from "./WhatsAppView";
+import WhatsAppView from "./WhatsAppView";
 
 export const AdminDashboard = () => {
   const [activeSection, setActiveSection] = useState<"profiles" | "matching" | "matches" | "tools" | "whatsapp">("profiles");

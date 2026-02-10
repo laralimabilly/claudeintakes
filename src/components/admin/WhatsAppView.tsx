@@ -1,21 +1,24 @@
+// src/components/admin/WhatsAppView.tsx
+// ============================================================================
+// WhatsApp conversation viewer for admin dashboard
+//
+// Shows all founder conversations with state badges,
+// click-to-expand chat view, and admin override controls.
+// ============================================================================
+
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Card, CardContent } from "@/components/ui/card";
-import {
-  RefreshCw,
-  RotateCcw,
-  MessageSquare,
-  ArrowLeft,
-  Users,
-  Loader2,
-} from "lucide-react";
-import { format } from "date-fns";
+import { useToast } from "@/hooks/use-toast";
+import { MessageSquare, RotateCcw, ChevronLeft, User } from "lucide-react";
 
-interface ConversationRow {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ConversationItem {
   id: string;
   founder_id: string;
   phone_number: string;
@@ -23,365 +26,348 @@ interface ConversationRow {
   context: Record<string, unknown>;
   last_message_at: string;
   founder_name: string | null;
-  last_message?: string | null;
+  last_message_preview: string | null;
 }
 
-interface MessageRow {
+interface ChatMessage {
   id: string;
   phone_number: string;
-  message_content: string | null;
-  is_from_user: boolean | null;
-  received_at: string;
+  message_content: string;
+  is_from_user: boolean;
+  created_at: string;
 }
 
-const STATE_BADGES: Record<string, { label: string; className: string }> = {
-  IDLE: { label: "Idle", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
-  MATCH_NOTIFIED: { label: "Match Notified", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  MATCH_DETAILS_SENT: { label: "Details Sent", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  INTRO_CONFIRMED: { label: "Intro Confirmed", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  WAITING_FOR_OTHER: { label: "Waiting for Other", className: "border-amber-500/30 text-amber-400 bg-amber-500/10" },
-  DECLINE_FEEDBACK: { label: "Decline Feedback", className: "border-red-500/30 text-red-400 bg-red-500/10" },
-  INTRO_SENT: { label: "Intro Sent", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  FOLLOWUP_PENDING: { label: "Followup Pending", className: "border-amber-500/30 text-amber-400 bg-amber-500/10" },
+// ---------------------------------------------------------------------------
+// State badge colors (matching conversationState.ts states)
+// ---------------------------------------------------------------------------
+
+const STATE_COLORS: Record<string, { bg: string; text: string }> = {
+  IDLE:               { bg: "bg-gray-500/20",    text: "text-gray-400" },
+  MATCH_NOTIFIED:     { bg: "bg-blue-500/20",    text: "text-blue-400" },
+  MATCH_DETAILS_SENT: { bg: "bg-blue-500/20",    text: "text-blue-400" },
+  INTRO_CONFIRMED:    { bg: "bg-emerald-500/20", text: "text-emerald-400" },
+  WAITING_FOR_OTHER:  { bg: "bg-yellow-500/20",  text: "text-yellow-400" },
+  DECLINE_FEEDBACK:   { bg: "bg-red-500/20",     text: "text-red-400" },
+  INTRO_SENT:         { bg: "bg-emerald-500/20", text: "text-emerald-400" },
+  FOLLOWUP_PENDING:   { bg: "bg-yellow-500/20",  text: "text-yellow-400" },
 };
 
-export const WhatsAppView = () => {
-  const [conversations, setConversations] = useState<ConversationRow[]>([]);
-  const [messages, setMessages] = useState<MessageRow[]>([]);
-  const [selectedConvo, setSelectedConvo] = useState<ConversationRow | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [resettingId, setResettingId] = useState<string | null>(null);
-  const { toast } = useToast();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+function StateBadge({ state }: { state: string }) {
+  const colors = STATE_COLORS[state] || STATE_COLORS.IDLE;
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${colors.bg} ${colors.text}`}>
+      {state.replace(/_/g, " ")}
+    </span>
+  );
+}
 
+// ---------------------------------------------------------------------------
+// Helper: get auth token
+// ---------------------------------------------------------------------------
+
+async function getAuthToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token || null;
+}
+
+// ---------------------------------------------------------------------------
+// Main Component
+// ---------------------------------------------------------------------------
+
+export default function WhatsAppView() {
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [resetting, setResetting] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
+
+  // Fetch conversations list
   useEffect(() => {
     fetchConversations();
   }, []);
 
+  // Fetch messages when a conversation is selected
   useEffect(() => {
-    if (messages.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (selectedPhone) {
+      fetchMessages(selectedPhone);
     }
+  }, [selectedPhone]);
+
+  // Auto-scroll to bottom of chat
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const fetchConversations = async () => {
-    setIsLoading(true);
+  async function fetchConversations() {
+    setLoading(true);
     try {
-      const { data: convos, error: convoError } = await supabase
+      const token = await getAuthToken();
+      if (!token) return;
+
+      // Fetch conversations joined with founder names
+      const { data, error } = await supabase
         .from("whatsapp_conversations")
-        .select("*")
+        .select(`
+          id,
+          founder_id,
+          phone_number,
+          current_state,
+          context,
+          last_message_at,
+          founder:founder_profiles!whatsapp_conversations_founder_id_fkey(name)
+        `)
         .order("last_message_at", { ascending: false });
 
-      if (convoError) throw convoError;
+      if (error) throw error;
 
-      const founderIds = [...new Set((convos || []).map((c) => c.founder_id))];
-      const { data: founders } = await supabase
-        .from("founder_profiles")
-        .select("id, name")
-        .in("id", founderIds);
-
-      const nameMap = new Map((founders || []).map((f) => [f.id, f.name]));
-
-      // Get last message for each phone number
-      const phoneNumbers = [...new Set((convos || []).map((c) => c.phone_number))];
-      const lastMessages = new Map<string, string | null>();
-
-      if (phoneNumbers.length > 0) {
-        for (const phone of phoneNumbers) {
-          const { data: msgs } = await supabase
+      // Fetch last message preview for each phone
+      const items: ConversationItem[] = await Promise.all(
+        (data || []).map(async (conv: any) => {
+          const { data: lastMsg } = await supabase
             .from("whatsapp_messages")
             .select("message_content")
-            .eq("phone_number", phone)
-            .order("received_at", { ascending: false })
-            .limit(1);
-          lastMessages.set(phone, msgs?.[0]?.message_content || null);
-        }
-      }
+            .eq("phone_number", conv.phone_number)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
 
-      const enriched: ConversationRow[] = (convos || []).map((c) => ({
-        id: c.id,
-        founder_id: c.founder_id,
-        phone_number: c.phone_number,
-        current_state: c.current_state,
-        context: (c.context as Record<string, unknown>) || {},
-        last_message_at: c.last_message_at,
-        founder_name: nameMap.get(c.founder_id) || null,
-        last_message: lastMessages.get(c.phone_number) || null,
-      }));
+          return {
+            id: conv.id,
+            founder_id: conv.founder_id,
+            phone_number: conv.phone_number,
+            current_state: conv.current_state,
+            context: conv.context || {},
+            last_message_at: conv.last_message_at,
+            founder_name: conv.founder?.name || null,
+            last_message_preview: lastMsg?.message_content?.slice(0, 60) || null,
+          };
+        })
+      );
 
-      setConversations(enriched);
-    } catch (error) {
-      console.error("Error fetching conversations:", error);
+      setConversations(items);
+    } catch (err) {
+      console.error("Failed to fetch conversations:", err);
       toast({ title: "Error", description: "Failed to load conversations", variant: "destructive" });
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  };
+  }
 
-  const fetchMessages = async (phoneNumber: string) => {
-    setIsLoadingMessages(true);
-    try {
-      const { data, error } = await supabase
-        .from("whatsapp_messages")
-        .select("id, phone_number, message_content, is_from_user, received_at")
-        .eq("phone_number", phoneNumber)
-        .order("received_at", { ascending: true });
+  async function fetchMessages(phoneNumber: string) {
+    const { data, error } = await supabase
+      .from("whatsapp_messages")
+      .select("id, phone_number, message_content, is_from_user, created_at")
+      .eq("phone_number", phoneNumber)
+      .order("created_at", { ascending: true });
 
-      if (error) throw error;
-      setMessages((data as MessageRow[]) || []);
-    } catch (error) {
-      console.error("Error fetching messages:", error);
-      toast({ title: "Error", description: "Failed to load messages", variant: "destructive" });
-    } finally {
-      setIsLoadingMessages(false);
+    if (error) {
+      console.error("Failed to fetch messages:", error);
+      return;
     }
-  };
 
-  const handleSelectConvo = (convo: ConversationRow) => {
-    setSelectedConvo(convo);
-    fetchMessages(convo.phone_number);
-  };
+    setMessages(data || []);
+  }
 
-  const handleResetToIdle = async (convo: ConversationRow) => {
-    setResettingId(convo.id);
+  async function handleResetToIdle(conversationId: string, phoneNumber: string) {
+    setResetting(true);
     try {
       const { error } = await supabase
         .from("whatsapp_conversations")
         .update({ current_state: "IDLE", context: {} })
-        .eq("id", convo.id);
+        .eq("id", conversationId);
 
       if (error) throw error;
 
-      toast({ title: "Reset", description: `Conversation reset to IDLE` });
-      await fetchConversations();
-      if (selectedConvo?.id === convo.id) {
-        setSelectedConvo({ ...convo, current_state: "IDLE", context: {} });
-      }
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message || "Failed to reset", variant: "destructive" });
+      toast({ title: "Reset", description: "Conversation reset to IDLE" });
+      fetchConversations();
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to reset conversation", variant: "destructive" });
     } finally {
-      setResettingId(null);
+      setResetting(false);
     }
-  };
+  }
 
-  const getStateBadge = (state: string) => {
-    const config = STATE_BADGES[state] || STATE_BADGES.IDLE;
-    return (
-      <Badge variant="outline" className={`text-[10px] ${config.className}`}>
-        {config.label}
-      </Badge>
-    );
-  };
+  // Selected conversation details
+  const selectedConv = conversations.find((c) => c.phone_number === selectedPhone);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center space-y-4">
-          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto" />
-          <p className="text-xs tracking-widest uppercase text-silver/40">Loading Conversations</p>
+  // ---------------------------------------------------------------------------
+  // Render: Conversation list (left panel)
+  // ---------------------------------------------------------------------------
+
+  function renderConversationList() {
+    if (loading) {
+      return <div className="p-4 text-white/50">Loading conversations...</div>;
+    }
+
+    if (conversations.length === 0) {
+      return (
+        <div className="p-8 text-center text-white/40">
+          <MessageSquare className="w-10 h-10 mx-auto mb-3 opacity-40" />
+          <p>No WhatsApp conversations yet</p>
         </div>
-      </div>
+      );
+    }
+
+    return (
+      <ScrollArea className="h-[calc(100vh-220px)]">
+        {conversations.map((conv) => (
+          <button
+            key={conv.id}
+            onClick={() => setSelectedPhone(conv.phone_number)}
+            className={`w-full text-left p-3 border-b border-white/5 hover:bg-white/5 transition-colors ${
+              selectedPhone === conv.phone_number ? "bg-white/10" : ""
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-white text-sm font-medium truncate">
+                {conv.founder_name || conv.phone_number}
+              </span>
+              <StateBadge state={conv.current_state} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-white/40 text-xs truncate max-w-[200px]">
+                {conv.last_message_preview || "No messages"}
+              </span>
+              <span className="text-white/30 text-xs whitespace-nowrap ml-2">
+                {new Date(conv.last_message_at).toLocaleDateString()}
+              </span>
+            </div>
+          </button>
+        ))}
+      </ScrollArea>
     );
   }
 
-  // Detail view
-  if (selectedConvo) {
-    const ctx = selectedConvo.context;
-    const hasMatchContext = ctx.match_id || ctx.other_founder_name;
+  // ---------------------------------------------------------------------------
+  // Render: Chat panel (right panel)
+  // ---------------------------------------------------------------------------
+
+  function renderChatPanel() {
+    if (!selectedPhone || !selectedConv) {
+      return (
+        <div className="flex-1 flex items-center justify-center text-white/30">
+          <div className="text-center">
+            <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p>Select a conversation</p>
+          </div>
+        </div>
+      );
+    }
+
+    const ctx = selectedConv.context;
 
     return (
-      <div className="h-full flex flex-col">
+      <div className="flex-1 flex flex-col">
         {/* Header */}
-        <div className="p-6 border-b border-white/5">
-          <div className="flex items-center gap-3 mb-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => { setSelectedConvo(null); setMessages([]); }}
-              className="text-silver/60 hover:text-white hover:bg-white/5 -ml-2"
-            >
-              <ArrowLeft className="h-4 w-4 mr-1" />
-              Back
-            </Button>
-            <div className="flex-1">
-              <h2 className="text-xl font-light text-white">
-                {selectedConvo.founder_name || "Unknown"}
-              </h2>
-              <p className="text-xs text-silver/50 mt-0.5">{selectedConvo.phone_number}</p>
+        <div className="p-3 border-b border-white/10">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="md:hidden text-white/60"
+                onClick={() => setSelectedPhone(null)}
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+              <User className="w-5 h-5 text-white/40" />
+              <div>
+                <p className="text-white text-sm font-medium">
+                  {selectedConv.founder_name || "Unknown"}
+                </p>
+                <p className="text-white/40 text-xs">{selectedConv.phone_number}</p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
-              {getStateBadge(selectedConvo.current_state)}
-              {selectedConvo.current_state !== "IDLE" && (
+              <StateBadge state={selectedConv.current_state} />
+              {selectedConv.current_state !== "IDLE" && (
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => handleResetToIdle(selectedConvo)}
-                  disabled={resettingId === selectedConvo.id}
-                  className="border-red-500/30 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  disabled={resetting}
+                  onClick={() => handleResetToIdle(selectedConv.id, selectedConv.phone_number)}
+                  className="text-xs border-white/10 text-white/60 hover:text-white"
                 >
-                  {resettingId === selectedConvo.id ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <RotateCcw className="h-3 w-3 mr-1" />
-                  )}
+                  <RotateCcw className="w-3 h-3 mr-1" />
                   Reset
                 </Button>
               )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fetchMessages(selectedConvo.phone_number)}
-                className="border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
-              >
-                <RefreshCw className="h-3 w-3" />
-              </Button>
             </div>
           </div>
 
-          {/* Match context card */}
-          {hasMatchContext && (
-            <Card className="bg-white/[0.03] border-white/10">
-              <CardContent className="p-3 flex items-center gap-4">
-                <Users className="h-4 w-4 text-silver/50 flex-shrink-0" />
-                <div className="text-xs text-silver/70 space-y-0.5">
-                  {ctx.other_founder_name && (
-                    <p>Match with: <span className="text-white">{ctx.other_founder_name as string}</span></p>
-                  )}
-                  {ctx.score != null && (
-                    <p>Score: <span className="text-white">{String(ctx.score)}%</span></p>
-                  )}
-                  {ctx.compatibility_level && (
-                    <p>Level: <span className="text-white">{String(ctx.compatibility_level).replace("_", " ")}</span></p>
-                  )}
-                  {ctx.side && (
-                    <p>Side: <span className="text-white">{String(ctx.side).toUpperCase()}</span></p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+          {/* Active match context card */}
+          {ctx.match_id && (
+            <div className="mt-2 p-2 rounded bg-white/5 border border-white/10 text-xs">
+              <span className="text-white/50">Active match:</span>{" "}
+              <span className="text-white">{(ctx.other_founder_name as string) || "Unknown"}</span>
+              {ctx.score && (
+                <>
+                  {" "}
+                  <span className="text-white/50">•</span>{" "}
+                  <span className="text-emerald-400">{String(ctx.score)}%</span>
+                </>
+              )}
+              {ctx.side && (
+                <>
+                  {" "}
+                  <span className="text-white/50">• Side</span>{" "}
+                  <span className="text-white">{String(ctx.side).toUpperCase()}</span>
+                </>
+              )}
+            </div>
           )}
         </div>
 
         {/* Messages */}
-        <ScrollArea className="flex-1 p-4">
-          {isLoadingMessages ? (
-            <div className="flex items-center justify-center h-32">
-              <Loader2 className="h-5 w-5 animate-spin text-silver/40" />
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-32 text-center">
-              <MessageSquare className="h-8 w-8 text-silver/20 mb-2" />
-              <p className="text-silver/40 text-sm">No messages yet</p>
-            </div>
-          ) : (
-            <div className="space-y-3 max-w-2xl mx-auto">
-              {messages.map((msg) => {
-                const isUser = msg.is_from_user !== false;
-                return (
-                  <div
-                    key={msg.id}
-                    className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className={`max-w-[75%] rounded-lg px-3 py-2 ${
-                        isUser
-                          ? "bg-white/10 text-white"
-                          : "bg-white/[0.04] text-silver/80"
-                      }`}
-                    >
-                      <p className="text-sm whitespace-pre-wrap break-words">
-                        {msg.message_content || "(empty)"}
-                      </p>
-                      <p className={`text-[10px] mt-1 ${isUser ? "text-silver/40 text-right" : "text-silver/30"}`}>
-                        {format(new Date(msg.received_at), "MMM d, h:mm a")}
-                      </p>
-                    </div>
+        <ScrollArea className="flex-1 p-3">
+          <div className="space-y-2">
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.is_from_user ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
+                    msg.is_from_user
+                      ? "bg-blue-600/30 text-white"
+                      : "bg-white/10 text-white/90"
+                  }`}
+                >
+                  {msg.message_content}
+                  <div className={`text-[10px] mt-1 ${msg.is_from_user ? "text-blue-300/50" : "text-white/30"}`}>
+                    {new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </div>
-                );
-              })}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
         </ScrollArea>
       </div>
     );
   }
 
-  // List view
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
   return (
-    <div className="h-full flex flex-col">
-      <div className="p-6 border-b border-white/5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-light text-white">WhatsApp Conversations</h2>
-            <p className="text-xs text-silver/50 mt-1">{conversations.length} conversations</p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={fetchConversations}
-            className="border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
-          >
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
+    <div className="flex h-[calc(100vh-180px)] border border-white/10 rounded-lg overflow-hidden bg-charcoal">
+      {/* Left: Conversation list */}
+      <div className={`w-full md:w-80 border-r border-white/10 ${selectedPhone ? "hidden md:block" : ""}`}>
+        <div className="p-3 border-b border-white/10">
+          <h3 className="text-white text-sm font-medium">WhatsApp Conversations</h3>
+          <p className="text-white/40 text-xs">{conversations.length} conversations</p>
         </div>
+        {renderConversationList()}
       </div>
 
-      <ScrollArea className="flex-1">
-        {conversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-center">
-            <MessageSquare className="h-12 w-12 text-silver/20 mb-4" />
-            <p className="text-silver/50">No conversations yet</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-white/5">
-            {conversations.map((convo) => (
-              <button
-                key={convo.id}
-                onClick={() => handleSelectConvo(convo)}
-                className="w-full text-left px-6 py-4 hover:bg-white/[0.02] transition-colors flex items-center gap-4"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm text-white font-medium truncate">
-                      {convo.founder_name || "Unknown"}
-                    </span>
-                    {getStateBadge(convo.current_state)}
-                  </div>
-                  <p className="text-xs text-silver/40 truncate">{convo.phone_number}</p>
-                  {convo.last_message && (
-                    <p className="text-xs text-silver/50 mt-1 truncate max-w-md">
-                      {convo.last_message.slice(0, 60)}{convo.last_message.length > 60 ? "…" : ""}
-                    </p>
-                  )}
-                </div>
-                <div className="flex-shrink-0 flex items-center gap-2">
-                  <span className="text-[10px] text-silver/30">
-                    {format(new Date(convo.last_message_at), "MMM d, h:mm a")}
-                  </span>
-                  {convo.current_state !== "IDLE" && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => { e.stopPropagation(); handleResetToIdle(convo); }}
-                      disabled={resettingId === convo.id}
-                      className="text-red-400/60 hover:text-red-400 hover:bg-red-500/10 h-7 px-2"
-                    >
-                      {resettingId === convo.id ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <RotateCcw className="h-3 w-3" />
-                      )}
-                    </Button>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </ScrollArea>
+      {/* Right: Chat panel */}
+      <div className={`flex-1 flex flex-col ${!selectedPhone ? "hidden md:flex" : ""}`}>
+        {renderChatPanel()}
+      </div>
     </div>
   );
-};
+}

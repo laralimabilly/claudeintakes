@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { Eye, Users, Zap, RefreshCw, Send, Loader2 } from "lucide-react";
 import { MatchDetails } from "./MatchDetails";
+import { getStatusConfig, canNotify } from "@/types/matchStatus";
 
 interface FounderMatch {
   id: string;
@@ -42,20 +43,6 @@ interface FounderMatch {
 
 type FilterType = "all" | "highly_compatible" | "somewhat_compatible";
 
-const STATUS_BADGES: Record<string, { label: string; className: string }> = {
-  pending: { label: "Pending", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
-  notified_a: { label: "Notified A", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  a_interested: { label: "A Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  notified_b: { label: "Notified B", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  b_interested: { label: "B Interested", className: "border-blue-500/30 text-blue-400 bg-blue-500/10" },
-  both_interested: { label: "Both Interested", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  intro_sent: { label: "Intro Sent", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  a_declined: { label: "A Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
-  b_declined: { label: "B Declined", className: "border-red-500/30 text-red-400 bg-red-500/10" },
-  completed: { label: "Completed", className: "border-emerald-500/30 text-emerald-400 bg-emerald-500/10" },
-  expired: { label: "Expired", className: "border-white/10 text-silver/60 bg-white/[0.03]" },
-};
-
 export const MatchesListView = () => {
   const [matches, setMatches] = useState<FounderMatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -64,6 +51,7 @@ export const MatchesListView = () => {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [sendingMatchIds, setSendingMatchIds] = useState<Set<string>>(new Set());
   const [isBulkSending, setIsBulkSending] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
   const { toast } = useToast();
 
   useEffect(() => {
@@ -144,7 +132,7 @@ export const MatchesListView = () => {
   }, [matches]);
 
   const pendingHighMatches = useMemo(
-    () => matches.filter((m) => (!m.status || m.status === "pending") && m.total_score >= 75),
+    () => matches.filter((m) => canNotify(m.status || "pending") && m.total_score >= 75),
     [matches]
   );
 
@@ -188,6 +176,7 @@ export const MatchesListView = () => {
     if (pendingHighMatches.length === 0) return;
 
     setIsBulkSending(true);
+    setBulkProgress({ current: 0, total: pendingHighMatches.length });
     let sent = 0;
     let failed = 0;
 
@@ -201,8 +190,10 @@ export const MatchesListView = () => {
 
         if (error) throw error;
         sent++;
+        setBulkProgress((p) => ({ ...p, current: sent + failed }));
       } catch {
         failed++;
+        setBulkProgress((p) => ({ ...p, current: sent + failed }));
       } finally {
         setSendingMatchIds((prev) => {
           const next = new Set(prev);
@@ -232,13 +223,12 @@ export const MatchesListView = () => {
     return "bg-red-500/20 text-red-400 border-red-500/30";
   };
 
-  const getStatusBadge = (status: string | null) => {
-    const key = status || "pending";
-    const config = STATUS_BADGES[key] || STATUS_BADGES.pending;
+  const renderStatusBadge = (status: string | null) => {
+    const config = getStatusConfig(status || "pending");
     return (
-      <Badge variant="outline" className={`text-[10px] ${config.className}`}>
+      <span className={`${config.color} ${config.textColor} rounded-full text-xs px-2 py-0.5`}>
         {config.label}
-      </Badge>
+      </span>
     );
   };
 
@@ -278,7 +268,9 @@ export const MatchesListView = () => {
                 ) : (
                   <Send className="h-4 w-4 mr-2" />
                 )}
-                Notify All Pending ({pendingHighMatches.length})
+                {isBulkSending
+                  ? `Sending ${bulkProgress.current}/${bulkProgress.total}...`
+                  : `Notify All Pending (${pendingHighMatches.length})`}
               </Button>
             )}
             <Button
@@ -357,7 +349,7 @@ export const MatchesListView = () => {
             <TableBody>
               {filteredMatches.map((match) => {
                 const isSending = sendingMatchIds.has(match.id);
-                const isPending = !match.status || match.status === "pending";
+                const isPending = canNotify(match.status || "pending");
 
                 return (
                   <TableRow 
@@ -405,7 +397,7 @@ export const MatchesListView = () => {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-center">
-                      {getStatusBadge(match.status)}
+                      {renderStatusBadge(match.status)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -460,6 +452,7 @@ export const MatchesListView = () => {
           {selectedMatch && (
             <MatchDetails
               match={{
+                id: selectedMatch.id,
                 total_score: selectedMatch.total_score,
                 compatibility_level: (selectedMatch.compatibility_level as 'highly_compatible' | 'somewhat_compatible') || 'somewhat_compatible',
                 status: selectedMatch.status,
@@ -472,6 +465,10 @@ export const MatchesListView = () => {
                   geo: selectedMatch.score_geo || 0,
                   advantages: selectedMatch.score_advantages || 0,
                 },
+              }}
+              onStatusChange={() => {
+                fetchMatches();
+                setIsDetailsOpen(false);
               }}
             />
           )}
