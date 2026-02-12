@@ -44,3 +44,6 @@ verify_jwt = true
 
 [functions.backfill-geocoding]
 verify_jwt = true
+
+[functions.system-parameters]
+verify_jwt = false

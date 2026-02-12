@@ -2,29 +2,20 @@
 // ============================================================================
 // 7-Dimension Matching Scoring Functions
 //
-// This file contains the core scoring logic for the MeetLine co-founder
-// matching algorithm. Each dimension evaluates a different aspect of
-// founder compatibility, returning a score from 0-100.
-//
-// DIMENSION WEIGHTS (defined in calculateMatch.ts):
-//   1. Skills Complementarity    30%
-//   2. Stage & Timeline          20%
-//   3. Communication Style       18%
-//   4. Values & Working Style    15%
-//   5. Vision & Problem Space    12%
-//   6. Geographic & Logistics     3%
-//   7. Unfair Advantage Synergy   2%
-//
-// SCORING PHILOSOPHY:
-//   - 100 = Perfect alignment / complementarity
-//   - 60-80 = Good match, minor differences
-//   - 40-60 = Neutral / unknown (insufficient data)
-//   - 20-40 = Poor alignment, potential friction
-//   - 0-20 = Significant mismatch / conflict
-//
+// All scoring functions now accept a config parameter from system_parameters
+// so weights, matrices, and thresholds can be tuned without code changes.
 // ============================================================================
 
-import type { FounderProfileForMatching } from "./types.ts";
+import type {
+  FounderProfileForMatching,
+  SkillsConfig,
+  StageConfig,
+  CommunicationConfig,
+  ValuesConfig,
+  VisionConfig,
+  GeoConfig,
+  AdvantagesConfig,
+} from "./types.ts";
 import { calculateCoverage, calculateOverlap, semanticSkillBoost, calculateSuperpowerBoost } from "./skillsHelpers.ts";
 import {
   DIRECTNESS_DIRECT,
@@ -33,14 +24,12 @@ import {
   STRUCTURE_FLEXIBLE,
   COLLAB_ASYNC,
   COLLAB_SYNC,
-  SPECTRUM_SCORES,
   placeOnSpectrum,
+  type SpectrumPosition,
 } from "./communicationHelpers.ts";
 import {
   type FounderWithLocation,
   calculateDistanceKm,
-  scoreDistance,
-  getTimezoneModifier,
   parseLocationPrefsFromText,
 } from "./geoHelpers.ts";
 import {
@@ -52,78 +41,31 @@ import {
   cosineSimilarity,
   parseEmbedding,
 } from "./visionHelpers.ts";
-import { extractValueProfile, scoreDimension, scoreEquity } from "./valuesHelpers.ts";
+import { extractValueProfile, scoreEquityWithConfig, scoreDimensionWithConfig } from "./valuesHelpers.ts";
 
-// Re-export for convenience
 export type { FounderProfileForMatching };
 
-// Use FounderProfileForMatching for scoring functions
 type FounderProfile = FounderProfileForMatching;
 
 
 // ============================================================================
-// 1. SKILLS COMPLEMENTARITY (30% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures how well two founders' skills complement each other.
-//   We want COMPLEMENTARITY, not similarity — ideal co-founders fill
-//   each other's gaps rather than duplicating skills.
-//
-// DATABASE FIELDS USED:
-//   - core_skills (ARRAY)           → What skills the founder HAS
-//   - seeking_skills (ARRAY)        → What skills the founder NEEDS
-//   - superpower (TEXT)             → Their unique strength
-//   - weaknesses_blindspots (ARRAY) → Their known gaps
-//
-// SCORING APPROACH (Three-layer matching):
-//
-//   Layer 1: Normalized exact match
-//     - Lowercase, trim, strip noise characters
-//     - "React.js" matches "react"
-//
-//   Layer 2: Synonym group + partial string matching
-//     - "Frontend" matches "React" (same group)
-//     - "ML" matches "Machine Learning" (synonym)
-//     - See SKILL_SYNONYM_GROUPS in skillsHelpers.ts
-//
-//   Layer 3: Semantic vocabulary overlap
-//     - Jaccard similarity on all skill-related text
-//     - Catches conceptual overlap when keywords fail
-//
-// SCORING BREAKDOWN:
-//   70% — Bidirectional coverage (does A have what B seeks & vice versa)
-//   20% — Superpower ↔ weakness complementarity boost
-//   10% — Semantic skill vocabulary overlap
-//   Penalty — Up to -30% for excessive core skill overlap (we want diversity)
-//
-// EXAMPLE SCORES:
-//   - A has "React", B seeks "Frontend"           → High coverage
-//   - A's superpower is "Sales", B's weakness is "Business" → Boost
-//   - Both have identical core_skills            → Overlap penalty
-//
+// 1. SKILLS COMPLEMENTARITY
 // ============================================================================
 
-export function scoreSkills(a: FounderProfile, b: FounderProfile): number {
-  // --- Layer 1 + 2: Coverage with normalization + synonyms ---
+export function scoreSkills(a: FounderProfile, b: FounderProfile, config: SkillsConfig): number {
+  const sw = config.sub_weights;
+
   const aCoversB = calculateCoverage(a.core_skills, b.seeking_skills);
   const bCoversA = calculateCoverage(b.core_skills, a.seeking_skills);
   const avgCoverage = (aCoversB + bCoversA) / 2;
 
-  // --- Superpower ↔ weakness complementarity boost ---
-  // If A's superpower addresses B's weakness (or vice versa), boost score
   const superpowerBoost = calculateSuperpowerBoost(a, b);
-
-  // --- Layer 3: Semantic skill vocabulary similarity ---
   const semanticBoost = semanticSkillBoost(a, b);
 
-  // --- Overlap penalty (we want complementary, not duplicate skills) ---
   const overlap = calculateOverlap(a.core_skills, b.core_skills);
-  const overlapPenalty = overlap * 0.3; // Max -30%
+  const overlapPenalty = overlap * config.overlap_penalty_factor;
 
-  // --- Combine ---
-  const rawScore = (avgCoverage * 0.7 + superpowerBoost * 0.2 + semanticBoost * 0.1) * 100;
-
+  const rawScore = (avgCoverage * sw.coverage + superpowerBoost * sw.superpower_boost + semanticBoost * sw.semantic_boost) * 100;
   const finalScore = rawScore * (1 - overlapPenalty);
 
   return Math.min(100, Math.max(0, Math.round(finalScore * 10) / 10));
@@ -131,53 +73,10 @@ export function scoreSkills(a: FounderProfile, b: FounderProfile): number {
 
 
 // ============================================================================
-// 2. STAGE & TIMELINE ALIGNMENT (20% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures alignment on startup stage, urgency, and commitment level.
-//   Co-founders should be at compatible stages and have similar timelines
-//   to avoid friction (e.g., one ready to quit job vs one exploring).
-//
-// DATABASE FIELDS USED:
-//   - stage (TEXT)            → Current startup stage (idea/mvp/launched/scaling)
-//   - timeline_start (TEXT)   → When they want to start working
-//   - urgency_level (TEXT)    → How urgent (ASAP/soon/flexible)
-//   - commitment_level (TEXT) → Full-time/part-time/flexible
-//
-// SCORING APPROACH:
-//   Three sub-scores averaged equally (33.3% each):
-//
-//   1. Stage alignment (compatibility matrix):
-//      - Same stage = 100
-//      - Adjacent stages = 80
-//      - 2 stages apart = 50
-//      - Opposite ends = 30
-//
-//   2. Urgency alignment:
-//      - Same urgency = 100
-//      - Adjacent = 80
-//      - Opposite = 50
-//
-//   3. Commitment alignment:
-//      - Same level = 100
-//      - One full-time, one not = 50
-//      - Unknown/flexible = 70
-//
-// NORMALIZATION:
-//   Handles variations in how stages are described:
-//   - "idea", "validation", "exploring" → 'idea'
-//   - "mvp", "building", "prototype" → 'mvp'
-//   - "launched", "live", "revenue" → 'launched'
-//   - "scaling", "growth", "series" → 'scaling'
-//
-// EXAMPLE SCORES:
-//   - Both at MVP stage, both ASAP, both full-time → 100
-//   - Idea vs Scaling, ASAP vs Flexible, Full vs Part → ~43
-//
+// 2. STAGE & TIMELINE ALIGNMENT
 // ============================================================================
 
-export function scoreStage(a: FounderProfile, b: FounderProfile): number {
+export function scoreStage(a: FounderProfile, b: FounderProfile, config: StageConfig): number {
   // --- Stage normalization ---
   const normalizeStage = (stage: string): string => {
     const s = stage?.toLowerCase() || "idea";
@@ -185,197 +84,86 @@ export function scoreStage(a: FounderProfile, b: FounderProfile): number {
     if (s.includes("mvp") || s.includes("building") || s.includes("prototype")) return "mvp";
     if (s.includes("launch") || s.includes("live") || s.includes("revenue")) return "launched";
     if (s.includes("scal") || s.includes("growth") || s.includes("series")) return "scaling";
-    return "idea"; // Default
-  };
-
-  // Stage compatibility matrix
-  const stageScores: Record<string, Record<string, number>> = {
-    idea:     { idea: 100, mvp: 80, launched: 50, scaling: 30 },
-    mvp:      { idea: 80,  mvp: 100, launched: 80, scaling: 50 },
-    launched: { idea: 50,  mvp: 80, launched: 100, scaling: 80 },
-    scaling:  { idea: 30,  mvp: 50, launched: 80, scaling: 100 },
+    return "idea";
   };
 
   const aStage = normalizeStage(a.stage || "");
   const bStage = normalizeStage(b.stage || "");
-  const stageScore = stageScores[aStage]?.[bStage] || 50;
+  const stageScore = config.stage_matrix[aStage]?.[bStage] ?? 50;
 
   // --- Urgency normalization ---
   const normalizeUrgency = (urgency: string): string => {
     const u = urgency?.toLowerCase() || "flexible";
     if (u.includes("asap") || u.includes("immediately") || u.includes("urgent") || u.includes("now")) return "asap";
     if (u.includes("soon") || u.includes("month") || u.includes("weeks")) return "soon";
-    return "flexible"; // Default
-  };
-
-  // Urgency compatibility matrix
-  const urgencyScores: Record<string, Record<string, number>> = {
-    asap:     { asap: 100, soon: 80, flexible: 50 },
-    soon:     { asap: 80,  soon: 100, flexible: 80 },
-    flexible: { asap: 50,  soon: 80, flexible: 100 },
+    return "flexible";
   };
 
   const aUrgency = normalizeUrgency(a.urgency_level || "");
   const bUrgency = normalizeUrgency(b.urgency_level || "");
-  const urgencyScore = urgencyScores[aUrgency]?.[bUrgency] || 60;
+  const urgencyScore = config.urgency_matrix[aUrgency]?.[bUrgency] ?? 60;
 
   // --- Commitment alignment ---
-  let commitmentScore = 70; // Default for unknown
   const aCommit = a.commitment_level?.toLowerCase() || "";
   const bCommit = b.commitment_level?.toLowerCase() || "";
 
+  let commitmentScore = config.commitment_scores.unknown;
   if (aCommit && bCommit) {
     if (aCommit === bCommit) {
-      commitmentScore = 100; // Exact match
+      commitmentScore = config.commitment_scores.same;
     } else if (
       (aCommit.includes("full") && !bCommit.includes("full")) ||
       (!aCommit.includes("full") && bCommit.includes("full"))
     ) {
-      commitmentScore = 50; // One full-time, one not — potential friction
+      commitmentScore = config.commitment_scores.one_fulltime_one_not;
     } else {
-      commitmentScore = 75; // Different but compatible
+      commitmentScore = config.commitment_scores.different_compatible;
     }
   }
 
-  // --- Average the three sub-scores ---
   return Math.round(((stageScore + urgencyScore + commitmentScore) / 3) * 10) / 10;
 }
 
 
 // ============================================================================
-// 3. COMMUNICATION & CONFLICT STYLE (18% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures compatibility in how founders communicate and handle conflict.
-//   Misaligned communication styles are a leading cause of co-founder breakups.
-//
-// DATABASE FIELDS USED:
-//   - working_style (TEXT)      → Primary source for communication preferences
-//   - commitment_level (TEXT)   → May contain hints about work preferences
-//   - equity_thoughts (TEXT)    → May reveal conflict resolution approach
-//   - non_negotiables (ARRAY)   → Often contains communication requirements
-//   - deal_breakers (ARRAY)     → Often contains communication red flags
-//
-// SCORING APPROACH:
-//   Three sub-dimensions on 5-point spectrums:
-//
-//   1. Directness (40% of communication score)
-//      Spectrum: Direct ←→ Gentle
-//      - Direct: "blunt", "candid", "radical candor", "no sugarcoating"
-//      - Gentle: "diplomatic", "thoughtful", "non-confrontational"
-//
-//   2. Structure preference (35% of communication score)
-//      Spectrum: Structured ←→ Flexible
-//      - Structured: "organized", "systematic", "standup", "agenda"
-//      - Flexible: "scrappy", "ad hoc", "go with the flow", "iterate"
-//
-//   3. Collaboration mode (25% of communication score)
-//      Spectrum: Async ←→ Sync
-//      - Async: "independent", "deep work", "written", "remote"
-//      - Sync: "collaborative", "pairing", "real-time", "whiteboard"
-//
-// SPECTRUM SCORING:
-//   Each founder is placed on a 5-point scale for each dimension:
-//   - high, mid-high, neutral, mid-low, low
-//
-//   Compatibility matrix (see SPECTRUM_SCORES in communicationHelpers.ts):
-//   - Same position = 100
-//   - Adjacent = 85
-//   - Neutral matches well with everything (65-80)
-//   - Opposite poles = 30
-//
-// EXAMPLE SCORES:
-//   - Both "direct" + "structured" + "sync" → 100
-//   - "Direct" vs "gentle" (opposite) → 30 on directness sub-score
-//
+// 3. COMMUNICATION & CONFLICT STYLE
 // ============================================================================
 
-export function scoreCommunication(a: FounderProfile, b: FounderProfile): number {
-  // --- Sub-dimension 1: Directness (40%) ---
-  // How directly do they prefer to communicate feedback?
+export function scoreCommunication(a: FounderProfile, b: FounderProfile, config: CommunicationConfig): number {
+  const sw = config.sub_weights;
+  const scores = config.spectrum_scores;
+
   const aDirectness = placeOnSpectrum(a, DIRECTNESS_DIRECT, DIRECTNESS_GENTLE);
   const bDirectness = placeOnSpectrum(b, DIRECTNESS_DIRECT, DIRECTNESS_GENTLE);
-  const directnessScore = SPECTRUM_SCORES[aDirectness]?.[bDirectness] ?? 65;
+  const directnessScore = scores[aDirectness]?.[bDirectness] ?? 65;
 
-  // --- Sub-dimension 2: Structure preference (35%) ---
-  // Do they prefer organized processes or flexible/scrappy approaches?
   const aStructure = placeOnSpectrum(a, STRUCTURE_STRUCTURED, STRUCTURE_FLEXIBLE);
   const bStructure = placeOnSpectrum(b, STRUCTURE_STRUCTURED, STRUCTURE_FLEXIBLE);
-  const structureScore = SPECTRUM_SCORES[aStructure]?.[bStructure] ?? 65;
+  const structureScore = scores[aStructure]?.[bStructure] ?? 65;
 
-  // --- Sub-dimension 3: Collaboration mode (25%) ---
-  // Do they prefer async/independent work or sync/collaborative?
   const aCollab = placeOnSpectrum(a, COLLAB_ASYNC, COLLAB_SYNC);
   const bCollab = placeOnSpectrum(b, COLLAB_ASYNC, COLLAB_SYNC);
-  const collabScore = SPECTRUM_SCORES[aCollab]?.[bCollab] ?? 65;
+  const collabScore = scores[aCollab]?.[bCollab] ?? 65;
 
-  // --- Weighted combination ---
-  const finalScore = directnessScore * 0.4 + structureScore * 0.35 + collabScore * 0.25;
+  const finalScore = directnessScore * sw.directness + structureScore * sw.structure + collabScore * sw.collaboration;
 
   return Math.round(finalScore * 10) / 10;
 }
 
 
 // ============================================================================
-// 4. VISION & PROBLEM SPACE ALIGNMENT (12% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures alignment on what problem they want to solve and who they
-//   want to serve. Co-founders should be excited about the same space,
-//   even if specific ideas differ.
-//
-// DATABASE FIELDS USED:
-//   - idea_description (TEXT)  → Their startup idea
-//   - problem_solving (TEXT)   → The problem they want to solve
-//   - target_customer (TEXT)   → Who they want to serve
-//   - embedding (ARRAY/TEXT)   → Pre-computed vector embedding of full profile
-//
-// SCORING APPROACH:
-//   Four components:
-//
-//   1. Industry/Vertical alignment (45%)
-//      Detects industry from idea text using 14 keyword groups:
-//      Fintech, Healthcare, E-commerce, SaaS, Education, AI/ML,
-//      Developer Tools, Media, Real Estate, Logistics, Climate,
-//      Food/Ag, Legal, HR/Future of Work
-//
-//      Scoring:
-//      - Same industry = 70-100% (based on overlap ratio)
-//      - No industry overlap = 20%
-//      - One/neither has detectable industry = 50%
-//
-//   2. Customer segment alignment (30%)
-//      Detects target customer from 7 segments:
-//      SMB, Enterprise, Consumer, Prosumer, Developer,
-//      Healthcare Providers, Students
-//
-//      Scoring:
-//      - Same segment = 75-100%
-//      - Different segments = 30%
-//      - Unknown = 50%
-//
-//   3. Semantic similarity (15%)
-//      Uses embedding cosine similarity if available,
-//      falls back to vocabulary Jaccard if not.
-//
-//   4. Vocabulary overlap boost (10%)
-//      Jaccard similarity on vision-related words.
-//      Catches specific shared terms.
-//
-// EXAMPLE SCORES:
-//   - Both fintech + both SMB + high embedding similarity → 85+
-//   - Healthcare vs Gaming + different customers → 25-35
-//
+// 4. VISION & PROBLEM SPACE ALIGNMENT
 // ============================================================================
 
-export function scoreVision(a: FounderProfile, b: FounderProfile): number {
-  // Build vision text from relevant fields
+export function scoreVision(a: FounderProfile, b: FounderProfile, config: VisionConfig): number {
+  const sw = config.sub_weights;
+  const indCfg = config.industry_scores;
+  const segCfg = config.segment_scores;
+
   const aVisionText = buildVisionText(a);
   const bVisionText = buildVisionText(b);
 
-  // --- Industry alignment (45%) ---
+  // --- Industry alignment ---
   const aIndustries = extractIndustries(aVisionText);
   const bIndustries = extractIndustries(bVisionText);
 
@@ -383,22 +171,18 @@ export function scoreVision(a: FounderProfile, b: FounderProfile): number {
   if (aIndustries.size > 0 && bIndustries.size > 0) {
     const overlap = new Set([...aIndustries].filter((x) => bIndustries.has(x)));
     if (overlap.size > 0) {
-      // Strong match: at least one industry in common
       const overlapRatio = overlap.size / Math.max(aIndustries.size, bIndustries.size);
-      industryScore = 0.7 + overlapRatio * 0.3; // 70-100%
+      industryScore = indCfg.overlap_base + overlapRatio * indCfg.overlap_bonus;
     } else {
-      // No overlap = different industries, low score
-      industryScore = 0.2;
+      industryScore = indCfg.no_overlap;
     }
   } else if (aIndustries.size > 0 || bIndustries.size > 0) {
-    // One has industry, one doesn't = neutral
-    industryScore = 0.5;
+    industryScore = indCfg.one_unknown;
   } else {
-    // Neither has detectable industry = neutral (unknown)
-    industryScore = 0.5;
+    industryScore = indCfg.both_unknown;
   }
 
-  // --- Customer segment alignment (30%) ---
+  // --- Customer segment alignment ---
   const aSegments = extractSegments(aVisionText + " " + (a.target_customer || ""));
   const bSegments = extractSegments(bVisionText + " " + (b.target_customer || ""));
 
@@ -406,40 +190,35 @@ export function scoreVision(a: FounderProfile, b: FounderProfile): number {
   if (aSegments.size > 0 && bSegments.size > 0) {
     const segmentOverlap = jaccard(aSegments, bSegments);
     if (segmentOverlap > 0) {
-      segmentScore = 0.75 + segmentOverlap * 0.25; // 75-100%
+      segmentScore = segCfg.overlap_base + segmentOverlap * segCfg.overlap_bonus;
     } else {
-      // Different segments = lower score
-      segmentScore = 0.3;
+      segmentScore = segCfg.no_overlap;
     }
   } else {
-    // Unknown segments = neutral
-    segmentScore = 0.5;
+    segmentScore = segCfg.unknown;
   }
 
-  // --- Semantic similarity (15%) ---
+  // --- Semantic similarity ---
   let semanticScore = 0;
   const aEmbed = parseEmbedding(a.embedding);
   const bEmbed = parseEmbedding(b.embedding);
 
   if (aEmbed && bEmbed) {
-    // Use embedding cosine similarity
     const cosine = cosineSimilarity(aEmbed, bEmbed);
     semanticScore = Math.max(0, cosine);
   } else {
-    // Fallback: vocabulary Jaccard on vision fields
     const aWords = extractWords(aVisionText);
     const bWords = extractWords(bVisionText);
     semanticScore = jaccard(aWords, bWords);
   }
 
-  // --- Vocabulary boost (10%) ---
+  // --- Vocabulary boost ---
   const aWords = extractWords(aVisionText);
   const bWords = extractWords(bVisionText);
   const vocabScore = jaccard(aWords, bWords);
 
-  // --- Combine with weights ---
-  const rawScore = industryScore * 0.45 + segmentScore * 0.3 + semanticScore * 0.15 + vocabScore * 0.1;
-
+  // --- Combine with config weights ---
+  const rawScore = industryScore * sw.industry + segmentScore * sw.segment + semanticScore * sw.semantic + vocabScore * sw.vocabulary;
   const finalScore = rawScore * 100;
 
   return Math.min(100, Math.max(0, Math.round(finalScore * 10) / 10));
@@ -447,345 +226,156 @@ export function scoreVision(a: FounderProfile, b: FounderProfile): number {
 
 
 // ============================================================================
-// 5. VALUES & WORKING STYLE (15% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures alignment on core values and working preferences.
-//   Values misalignment causes deep, long-term friction that's hard to resolve.
-//
-// DATABASE FIELDS USED:
-//   - working_style (TEXT)   → Work preferences, pace, approach
-//   - equity_thoughts (TEXT) → Equity philosophy and fairness views
-//
-// SCORING APPROACH:
-//   Six value dimensions extracted via keyword detection:
-//
-//   1. Work pace (25%)
-//      Fast ←→ Deliberate
-//      - Fast: "move fast", "ship fast", "velocity", "hustle"
-//      - Deliberate: "careful", "methodical", "quality over speed"
-//
-//   2. Risk tolerance (20%)
-//      High ←→ Low
-//      - High: "bold", "moonshot", "all in", "10x"
-//      - Low: "conservative", "bootstrap", "capital efficient"
-//
-//   3. Equity philosophy (20%)
-//      Four buckets:
-//      - Equal: "50/50", "split evenly"
-//      - Contribution-based: "merit", "earn", "vest"
-//      - Flexible: "negotiate", "discuss", "depends"
-//      - Clear majority: "control", "my idea"
-//
-//   4. Decision-making style (15%)
-//      Data-driven ←→ Intuition
-//      - Data: "metrics", "A/B test", "evidence", "KPIs"
-//      - Intuition: "gut", "instinct", "creative", "conviction"
-//
-//   5. Autonomy preference (10%)
-//      Autonomous ←→ Collaborative
-//      - Autonomous: "independent", "async", "self-directed"
-//      - Collaborative: "team-first", "consensus", "pair programming"
-//
-//   6. Work-life balance (10%)
-//      Intense ←→ Balanced
-//      - Intense: "24/7", "grind", "whatever it takes"
-//      - Balanced: "boundaries", "sustainable", "avoid burnout"
-//
-// DIMENSION SCORING:
-//   - Same position = 100
-//   - Adjacent (medium) = 75
-//   - Opposite = 40
-//   - Unknown = 60
-//
-// EQUITY SPECIAL RULES:
-//   - Equal + Contribution-based = 65 (can work)
-//   - Equal + Clear majority = 30 (conflict!)
-//   - Flexible + anything = 85 (compatible)
-//
-// EXAMPLE SCORES:
-//   - Both fast-paced, data-driven, equal equity → 90+
-//   - Fast vs deliberate, bold vs conservative → 40-50
-//
+// 5. VALUES & WORKING STYLE
 // ============================================================================
 
-export function scoreValues(a: FounderProfile, b: FounderProfile): number {
-  // Extract value profiles from text fields
+export function scoreValues(a: FounderProfile, b: FounderProfile, config: ValuesConfig): number {
+  const sw = config.sub_weights;
+  const ds = config.dimension_scores;
+  const ec = config.equity_compatibility;
+
   const aProfile = extractValueProfile(a);
   const bProfile = extractValueProfile(b);
 
-  // Score each dimension
-  const paceScore = scoreDimension(aProfile.pace, bProfile.pace);
-  const riskScore = scoreDimension(aProfile.risk, bProfile.risk);
-  const decisionScore = scoreDimension(aProfile.decision, bProfile.decision);
-  const autonomyScore = scoreDimension(aProfile.autonomy, bProfile.autonomy);
-  const worklifeScore = scoreDimension(aProfile.worklife, bProfile.worklife);
-  const equityScoreVal = scoreEquity(aProfile.equity, bProfile.equity);
+  const paceScore = scoreDimensionWithConfig(aProfile.pace, bProfile.pace, ds);
+  const riskScore = scoreDimensionWithConfig(aProfile.risk, bProfile.risk, ds);
+  const decisionScore = scoreDimensionWithConfig(aProfile.decision, bProfile.decision, ds);
+  const autonomyScore = scoreDimensionWithConfig(aProfile.autonomy, bProfile.autonomy, ds);
+  const worklifeScore = scoreDimensionWithConfig(aProfile.worklife, bProfile.worklife, ds);
+  const equityScoreVal = scoreEquityWithConfig(aProfile.equity, bProfile.equity, ec);
 
-  // Weighted combination
   const rawScore =
-    paceScore * 0.25 +
-    riskScore * 0.2 +
-    equityScoreVal * 0.2 +
-    decisionScore * 0.15 +
-    autonomyScore * 0.1 +
-    worklifeScore * 0.1;
+    paceScore * sw.pace +
+    riskScore * sw.risk +
+    equityScoreVal * sw.equity +
+    decisionScore * sw.decision +
+    autonomyScore * sw.autonomy +
+    worklifeScore * sw.worklife;
 
   return Math.min(100, Math.max(0, Math.round(rawScore * 10) / 10));
 }
 
 
 // ============================================================================
-// 6. GEOGRAPHIC & LOGISTICS (3% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures geographic compatibility for co-working.
-//   Lower weight because remote work is common, but still matters for
-//   some founders who prefer in-person collaboration.
-//
-// DATABASE FIELDS USED:
-//   - location_preference (TEXT) → Location requirements/preferences
-//   - location (OBJECT, optional) → Structured location data from founder_locations:
-//     - lat, lng (coordinates)
-//     - city, country
-//     - timezone_offset
-//     - is_remote_ok, is_remote_only, is_hybrid_ok
-//     - willing_to_relocate
-//
-// SCORING APPROACH:
-//   Two modes:
-//
-//   A. COORDINATE-BASED (when both have lat/lng):
-//      Uses Haversine distance:
-//      - < 50km (same city) = 100
-//      - < 200km (short trip) = 90
-//      - < 500km (day trip) = 80
-//      - < 2000km (regional) = 70
-//      - < 5000km (continental) = 60
-//      - < 10000km (intercontinental) = 50
-//      - > 10000km (global) = 40
-//
-//      Modifiers:
-//      - Both remote OK + good timezone overlap (+10)
-//      - Both remote OK + poor timezone overlap (-10)
-//      - One willing to relocate + distant (+5)
-//
-//   B. FALLBACK (no coordinates):
-//      Based on text parsing of location_preference:
-//      - Both remote-only = 75
-//      - Both remote-ok = 70 (+/- timezone modifier)
-//      - One willing to relocate = 65
-//      - One remote-ok = 50
-//      - No data = 50
-//      - Different locations, no flexibility = 30
-//
-// TIMEZONE SCORING:
-//   - ≤3 hour gap: +10 (great overlap)
-//   - ≤6 hour gap: 0 (manageable)
-//   - >6 hour gap: -10 (difficult)
-//
-// EXAMPLE SCORES:
-//   - Same city (50km) = 100
-//   - NYC ↔ SF (remote OK, 3hr timezone) = 80
-//   - NYC ↔ London (remote OK, 5hr timezone) = 70
-//   - NYC ↔ Singapore (remote OK, 12hr timezone) = 50
-//
+// 6. GEOGRAPHIC & LOGISTICS
 // ============================================================================
 
-export function scoreGeo(a: FounderProfile, b: FounderProfile): number {
-  // Cast to extended type that may include location data
+export function scoreGeo(a: FounderProfile, b: FounderProfile, config: GeoConfig): number {
   const aExt = a as FounderWithLocation;
   const bExt = b as FounderWithLocation;
 
   const aLoc = aExt.location;
   const bLoc = bExt.location;
 
-  // Get preferences - from location table if available, otherwise parse from text
   const aPrefs = aLoc
-    ? {
-        remoteOk: aLoc.is_remote_ok,
-        remoteOnly: aLoc.is_remote_only,
-        willingToRelocate: aLoc.willing_to_relocate,
-      }
+    ? { remoteOk: aLoc.is_remote_ok, remoteOnly: aLoc.is_remote_only, willingToRelocate: aLoc.willing_to_relocate }
     : parseLocationPrefsFromText(a.location_preference);
 
   const bPrefs = bLoc
-    ? {
-        remoteOk: bLoc.is_remote_ok,
-        remoteOnly: bLoc.is_remote_only,
-        willingToRelocate: bLoc.willing_to_relocate,
-      }
+    ? { remoteOk: bLoc.is_remote_ok, remoteOnly: bLoc.is_remote_only, willingToRelocate: bLoc.willing_to_relocate }
     : parseLocationPrefsFromText(b.location_preference);
 
   const bothRemoteOk = aPrefs.remoteOk && bPrefs.remoteOk;
   const oneRemoteOk = aPrefs.remoteOk || bPrefs.remoteOk;
   const oneWillingToRelocate = aPrefs.willingToRelocate || bPrefs.willingToRelocate;
 
-  // Check if we have coordinates for both
   const aHasCoords = aLoc?.lat != null && aLoc?.lng != null;
   const bHasCoords = bLoc?.lat != null && bLoc?.lng != null;
 
   if (aHasCoords && bHasCoords) {
-    // ========== COORDINATE-BASED SCORING ==========
     const distance = calculateDistanceKm(aLoc!.lat!, aLoc!.lng!, bLoc!.lat!, bLoc!.lng!);
 
-    let score = scoreDistance(distance);
+    // Use config distance_scores thresholds
+    let score = scoreDistanceWithConfig(distance, config.distance_scores);
 
-    // Timezone modifier for remote pairs
     if (bothRemoteOk) {
-      score += getTimezoneModifier(aLoc!.timezone_offset, bLoc!.timezone_offset);
+      score += getTimezoneModifierWithConfig(aLoc!.timezone_offset, bLoc!.timezone_offset, config.timezone_modifiers);
     }
 
-    // Relocation bonus for distant locations
     if (oneWillingToRelocate && distance > 500) {
-      score += 5;
+      score += config.relocate_bonus;
     }
 
     return Math.min(100, Math.max(0, Math.round(score)));
   }
 
-  // ========== FALLBACK SCORING (no coordinates) ==========
+  // ========== FALLBACK SCORING ==========
+  const fb = config.fallback_scores;
 
-  // Both remote-only is a solid match
-  if (aPrefs.remoteOnly && bPrefs.remoteOnly) {
-    return 75;
-  }
+  if (aPrefs.remoteOnly && bPrefs.remoteOnly) return fb.both_remote_only;
 
-  // Both open to remote
   if (bothRemoteOk) {
-    // Try timezone scoring if available
-    const tzModifier = getTimezoneModifier(aLoc?.timezone_offset, bLoc?.timezone_offset);
-    return 70 + tzModifier;
+    const tzMod = getTimezoneModifierWithConfig(aLoc?.timezone_offset, bLoc?.timezone_offset, config.timezone_modifiers);
+    return fb.both_remote_ok + tzMod;
   }
 
-  // One willing to relocate
-  if (oneWillingToRelocate) {
-    return 65;
-  }
+  if (oneWillingToRelocate) return fb.one_relocate;
+  if (oneRemoteOk) return fb.one_remote_ok;
+  if (!a.location_preference && !b.location_preference) return fb.no_data;
 
-  // One is open to remote
-  if (oneRemoteOk) {
-    return 50;
-  }
+  return fb.no_flexibility;
+}
 
-  // No location data at all — neutral
-  if (!a.location_preference && !b.location_preference) {
-    return 50;
-  }
+/** Score distance using config thresholds */
+function scoreDistanceWithConfig(distanceKm: number, distanceScores: Record<string, number>): number {
+  const thresholds = Object.keys(distanceScores)
+    .filter(k => k !== 'beyond')
+    .map(Number)
+    .sort((a, b) => a - b);
 
-  // Different locations with no flexibility — poor match
-  return 30;
+  for (const threshold of thresholds) {
+    if (distanceKm < threshold) {
+      return distanceScores[String(threshold)];
+    }
+  }
+  return distanceScores['beyond'] ?? 40;
+}
+
+/** Timezone modifier using config */
+function getTimezoneModifierWithConfig(
+  offsetA: number | null | undefined,
+  offsetB: number | null | undefined,
+  tz: GeoConfig['timezone_modifiers'],
+): number {
+  if (offsetA == null || offsetB == null) return 0;
+
+  const gapHours = Math.abs(offsetA - offsetB) / 60;
+
+  if (gapHours <= tz.good_hours) return tz.good_bonus;
+  if (gapHours <= tz.moderate_hours) return tz.moderate_bonus;
+  return tz.poor_penalty;
 }
 
 
 // ============================================================================
-// 7. UNFAIR ADVANTAGE SYNERGY (2% of total score)
-// ============================================================================
-//
-// PURPOSE:
-//   Measures complementarity of "unfair advantages" — unique assets
-//   each founder brings. We want DIFFERENT advantages for synergy,
-//   not duplicate ones.
-//
-// DATABASE FIELDS USED:
-//   - background (TEXT)        → Professional history, domain expertise
-//   - superpower (TEXT)        → Unique strength
-//   - previous_founder (BOOL)  → Has founded a company before
-//
-// SCORING APPROACH:
-//   Extract advantage categories from text:
-//
-//   1. Domain expertise
-//      Keywords: "expert", "years in", "specialist"
-//
-//   2. Network
-//      Keywords: "network", "connections", "contacts", "relationships"
-//
-//   3. Technical depth
-//      Keywords: "engineer", "technical", "developer", "architect"
-//
-//   4. Business/Sales
-//      Keywords: "sales", "business", "revenue", "deals"
-//
-//   5. Founder experience
-//      From previous_founder boolean field
-//
-// SYNERGY SCORING:
-//   - Both have advantages, NO overlap = 80 (great synergy!)
-//   - Both have advantages, 1 overlap = 65 (some synergy)
-//   - Both have advantages, 2+ overlap = 50 (too similar)
-//   - Only one has advantages = 60
-//   - Neither has clear advantages = 50
-//
-// PHILOSOPHY:
-//   Unlike other dimensions, we reward DIFFERENCE here.
-//   A technical founder + a sales founder = better than two technical founders.
-//
-// EXAMPLE SCORES:
-//   - A: technical + domain, B: network + sales → 80 (zero overlap)
-//   - A: technical + sales, B: technical + founder exp → 65 (1 overlap)
-//   - A: technical, B: technical → 50 (same advantage)
-//
+// 7. UNFAIR ADVANTAGE SYNERGY
 // ============================================================================
 
-export function scoreAdvantages(a: FounderProfile, b: FounderProfile): number {
-  // Extract advantage categories from profile text
+export function scoreAdvantages(a: FounderProfile, b: FounderProfile, config: AdvantagesConfig): number {
   const extractAdvantages = (profile: FounderProfile): Set<string> => {
     const advantages = new Set<string>();
-
     const text = `${profile.background || ""} ${profile.superpower || ""}`.toLowerCase();
 
-    // Domain expertise
-    if (text.includes("expert") || text.includes("years in") || text.includes("specialist")) {
-      advantages.add("domain_expertise");
-    }
-
-    // Network
-    if (text.includes("network") || text.includes("connections") || text.includes("contacts") || text.includes("relationships")) {
-      advantages.add("network");
-    }
-
-    // Technical depth
-    if (text.includes("engineer") || text.includes("technical") || text.includes("developer") || text.includes("architect")) {
-      advantages.add("technical");
-    }
-
-    // Business/sales
-    if (text.includes("sales") || text.includes("business") || text.includes("revenue") || text.includes("deals")) {
-      advantages.add("business");
-    }
-
-    // Founder experience (from boolean field)
-    if (profile.previous_founder) {
-      advantages.add("founder_experience");
-    }
+    if (text.includes("expert") || text.includes("years in") || text.includes("specialist")) advantages.add("domain_expertise");
+    if (text.includes("network") || text.includes("connections") || text.includes("contacts") || text.includes("relationships")) advantages.add("network");
+    if (text.includes("engineer") || text.includes("technical") || text.includes("developer") || text.includes("architect")) advantages.add("technical");
+    if (text.includes("sales") || text.includes("business") || text.includes("revenue") || text.includes("deals")) advantages.add("business");
+    if (profile.previous_founder) advantages.add("founder_experience");
 
     return advantages;
   };
 
   const aAdvantages = extractAdvantages(a);
   const bAdvantages = extractAdvantages(b);
+  const syn = config.synergy_scores;
 
-  // Calculate overlap
   if (aAdvantages.size > 0 && bAdvantages.size > 0) {
     const overlap = Array.from(aAdvantages).filter((adv) => bAdvantages.has(adv)).length;
-
-    if (overlap === 0) {
-      return 80; // Completely different advantages = great synergy!
-    } else if (overlap === 1) {
-      return 65; // Some overlap = moderate synergy
-    } else {
-      return 50; // Too much overlap = less complementary
-    }
+    if (overlap === 0) return syn.zero_overlap;
+    if (overlap === 1) return syn.one_overlap;
+    return syn.high_overlap;
   }
 
-  // Only one has clear advantages
-  if (aAdvantages.size > 0 || bAdvantages.size > 0) {
-    return 60;
-  }
-
-  // Neither has clear advantages — neutral
-  return 50;
+  if (aAdvantages.size > 0 || bAdvantages.size > 0) return syn.one_has;
+  return syn.neither_has;
 }

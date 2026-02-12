@@ -1,22 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useMatchingWeights } from "@/contexts/SystemParametersContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Eye, Users, Zap, RefreshCw, Send, Loader2 } from "lucide-react";
 import { MatchDetails } from "./MatchDetails";
@@ -53,6 +46,11 @@ export const MatchesListView = () => {
   const [isBulkSending, setIsBulkSending] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
   const { toast } = useToast();
+  const matchingWeights = useMatchingWeights();
+
+  // Configurable thresholds from system parameters
+  const highThreshold = matchingWeights?.highly_compatible_threshold ?? 75;
+  const minThreshold = matchingWeights?.min_match_score ?? 60;
 
   useEffect(() => {
     fetchMatches();
@@ -64,20 +62,9 @@ export const MatchesListView = () => {
       const { data, error } = await supabase
         .from("founder_matches")
         .select(`
-          id,
-          founder_id,
-          matched_founder_id,
-          total_score,
-          compatibility_level,
-          score_skills,
-          score_stage,
-          score_communication,
-          score_vision,
-          score_values,
-          score_geo,
-          score_advantages,
-          status,
-          created_at
+          id, founder_id, matched_founder_id, total_score, compatibility_level,
+          score_skills, score_stage, score_communication, score_vision,
+          score_values, score_geo, score_advantages, status, created_at
         `)
         .order("total_score", { ascending: false });
 
@@ -107,11 +94,7 @@ export const MatchesListView = () => {
       setMatches(enrichedMatches);
     } catch (error) {
       console.error("Error fetching matches:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load matches",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "Failed to load matches", variant: "destructive" });
     } finally {
       setIsLoading(false);
     }
@@ -119,21 +102,19 @@ export const MatchesListView = () => {
 
   const filteredMatches = useMemo(() => {
     if (filter === "all") return matches;
-    if (filter === "highly_compatible") {
-      return matches.filter((m) => m.total_score >= 75);
-    }
-    return matches.filter((m) => m.total_score >= 60 && m.total_score < 75);
-  }, [matches, filter]);
+    if (filter === "highly_compatible") return matches.filter((m) => m.total_score >= highThreshold);
+    return matches.filter((m) => m.total_score >= minThreshold && m.total_score < highThreshold);
+  }, [matches, filter, highThreshold, minThreshold]);
 
   const stats = useMemo(() => {
-    const highlyCompatible = matches.filter((m) => m.total_score >= 75).length;
-    const somewhatCompatible = matches.filter((m) => m.total_score >= 60 && m.total_score < 75).length;
+    const highlyCompatible = matches.filter((m) => m.total_score >= highThreshold).length;
+    const somewhatCompatible = matches.filter((m) => m.total_score >= minThreshold && m.total_score < highThreshold).length;
     return { total: matches.length, highlyCompatible, somewhatCompatible };
-  }, [matches]);
+  }, [matches, highThreshold, minThreshold]);
 
   const pendingHighMatches = useMemo(
-    () => matches.filter((m) => canNotify(m.status || "pending") && m.total_score >= 75),
-    [matches]
+    () => matches.filter((m) => canNotify(m.status || "pending") && m.total_score >= highThreshold),
+    [matches, highThreshold]
   );
 
   const handleViewDetails = (match: FounderMatch) => {
@@ -147,34 +128,21 @@ export const MatchesListView = () => {
       const { data, error } = await supabase.functions.invoke("send-whatsapp-intro", {
         body: { matchId: match.id },
       });
-
       if (error) throw error;
-
-      const founderName = data?.notifiedFounder?.name || match.founder_a?.name || "Founder A";
       toast({
         title: "Notification sent",
-        description: `Match notification sent to ${founderName}`,
+        description: `Match notification sent to ${data?.notifiedFounder?.name || match.founder_a?.name || "Founder A"}`,
       });
       await fetchMatches();
     } catch (error: any) {
-      console.error("Error sending notification:", error);
-      toast({
-        title: "Failed to send",
-        description: error.message || "Could not send match notification",
-        variant: "destructive",
-      });
+      toast({ title: "Failed to send", description: error.message || "Could not send", variant: "destructive" });
     } finally {
-      setSendingMatchIds((prev) => {
-        const next = new Set(prev);
-        next.delete(match.id);
-        return next;
-      });
+      setSendingMatchIds((prev) => { const next = new Set(prev); next.delete(match.id); return next; });
     }
   };
 
   const handleBulkNotify = async () => {
     if (pendingHighMatches.length === 0) return;
-
     setIsBulkSending(true);
     setBulkProgress({ current: 0, total: pendingHighMatches.length });
     let sent = 0;
@@ -183,43 +151,29 @@ export const MatchesListView = () => {
     for (const match of pendingHighMatches) {
       try {
         setSendingMatchIds((prev) => new Set(prev).add(match.id));
-
-        const { error } = await supabase.functions.invoke("send-whatsapp-intro", {
-          body: { matchId: match.id },
-        });
-
+        const { error } = await supabase.functions.invoke("send-whatsapp-intro", { body: { matchId: match.id } });
         if (error) throw error;
         sent++;
-        setBulkProgress((p) => ({ ...p, current: sent + failed }));
       } catch {
         failed++;
-        setBulkProgress((p) => ({ ...p, current: sent + failed }));
       } finally {
-        setSendingMatchIds((prev) => {
-          const next = new Set(prev);
-          next.delete(match.id);
-          return next;
-        });
+        setBulkProgress((p) => ({ ...p, current: sent + failed }));
+        setSendingMatchIds((prev) => { const next = new Set(prev); next.delete(match.id); return next; });
       }
-
-      // 2-second delay between sends
       if (match !== pendingHighMatches[pendingHighMatches.length - 1]) {
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
 
     setIsBulkSending(false);
-    toast({
-      title: "Bulk notify complete",
-      description: `${sent} sent, ${failed} failed`,
-    });
+    toast({ title: "Bulk notify complete", description: `${sent} sent, ${failed} failed` });
     await fetchMatches();
   };
 
   const getScoreBadgeColor = (score: number) => {
     if (score >= 80) return "bg-emerald-500/20 text-emerald-400 border-emerald-500/30";
     if (score >= 70) return "bg-blue-500/20 text-blue-400 border-blue-500/30";
-    if (score >= 60) return "bg-amber-500/20 text-amber-400 border-amber-500/30";
+    if (score >= minThreshold) return "bg-amber-500/20 text-amber-400 border-amber-500/30";
     return "bg-red-500/20 text-red-400 border-red-500/30";
   };
 
@@ -251,7 +205,7 @@ export const MatchesListView = () => {
           <div>
             <h2 className="text-xl font-light text-white">Computed Matches</h2>
             <p className="text-xs text-silver/50 mt-1">
-              {stats.total} total matches • {stats.highlyCompatible} highly compatible • {stats.somewhatCompatible} somewhat compatible
+              {stats.total} total • {stats.highlyCompatible} highly compatible • {stats.somewhatCompatible} somewhat compatible
             </p>
           </div>
           <div className="flex gap-2">
@@ -263,14 +217,8 @@ export const MatchesListView = () => {
                 disabled={isBulkSending}
                 className="border-emerald-500/30 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
               >
-                {isBulkSending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4 mr-2" />
-                )}
-                {isBulkSending
-                  ? `Sending ${bulkProgress.current}/${bulkProgress.total}...`
-                  : `Notify All Pending (${pendingHighMatches.length})`}
+                {isBulkSending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
+                {isBulkSending ? `Sending ${bulkProgress.current}/${bulkProgress.total}...` : `Notify All Pending (${pendingHighMatches.length})`}
               </Button>
             )}
             <Button
@@ -285,16 +233,13 @@ export const MatchesListView = () => {
           </div>
         </div>
 
-        {/* Filter Buttons */}
+        {/* Filters */}
         <div className="flex gap-2">
           <Button
             variant={filter === "all" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("all")}
-            className={filter === "all" 
-              ? "bg-white text-charcoal hover:bg-white/90" 
-              : "border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
-            }
+            className={filter === "all" ? "bg-white text-charcoal hover:bg-white/90" : "border-white/10 text-silver/70 hover:text-white hover:bg-white/5"}
           >
             All ({stats.total})
           </Button>
@@ -302,10 +247,7 @@ export const MatchesListView = () => {
             variant={filter === "highly_compatible" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("highly_compatible")}
-            className={filter === "highly_compatible"
-              ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30"
-              : "border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
-            }
+            className={filter === "highly_compatible" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "border-white/10 text-silver/70 hover:text-white hover:bg-white/5"}
           >
             <Zap className="h-3 w-3 mr-1" />
             Highly Compatible ({stats.highlyCompatible})
@@ -314,10 +256,7 @@ export const MatchesListView = () => {
             variant={filter === "somewhat_compatible" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("somewhat_compatible")}
-            className={filter === "somewhat_compatible"
-              ? "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30"
-              : "border-white/10 text-silver/70 hover:text-white hover:bg-white/5"
-            }
+            className={filter === "somewhat_compatible" ? "bg-amber-500/20 text-amber-400 border-amber-500/30" : "border-white/10 text-silver/70 hover:text-white hover:bg-white/5"}
           >
             Compatible ({stats.somewhatCompatible})
           </Button>
@@ -352,53 +291,37 @@ export const MatchesListView = () => {
                 const isPending = canNotify(match.status || "pending");
 
                 return (
-                  <TableRow 
-                    key={match.id} 
-                    className="border-white/5 hover:bg-white/[0.02] transition-colors"
-                  >
+                  <TableRow key={match.id} className="border-white/5 hover:bg-white/[0.02] transition-colors">
                     <TableCell>
                       <div>
-                        <p className="text-sm text-white font-medium">
-                          {match.founder_a?.name || "Unknown"}
-                        </p>
-                        <p className="text-xs text-silver/40 line-clamp-1 max-w-48">
-                          {match.founder_a?.idea_description || "No description"}
-                        </p>
+                        <p className="text-sm text-white font-medium">{match.founder_a?.name || "Unknown"}</p>
+                        <p className="text-xs text-silver/40 line-clamp-1 max-w-48">{match.founder_a?.idea_description || "No description"}</p>
                       </div>
                     </TableCell>
                     <TableCell>
                       <div>
-                        <p className="text-sm text-white font-medium">
-                          {match.founder_b?.name || "Unknown"}
-                        </p>
-                        <p className="text-xs text-silver/40 line-clamp-1 max-w-48">
-                          {match.founder_b?.idea_description || "No description"}
-                        </p>
+                        <p className="text-sm text-white font-medium">{match.founder_b?.name || "Unknown"}</p>
+                        <p className="text-xs text-silver/40 line-clamp-1 max-w-48">{match.founder_b?.idea_description || "No description"}</p>
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
-                      <Badge 
-                        variant="outline" 
-                        className={`text-xs font-medium ${getScoreBadgeColor(match.total_score)}`}
-                      >
+                      <Badge variant="outline" className={`text-xs font-medium ${getScoreBadgeColor(match.total_score)}`}>
                         {Math.round(match.total_score)}%
                       </Badge>
                     </TableCell>
                     <TableCell className="text-center">
-                      <Badge 
-                        variant="outline" 
+                      <Badge
+                        variant="outline"
                         className={`text-[10px] ${
-                          match.compatibility_level === 'highly_compatible'
-                            ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
-                            : 'border-amber-500/30 text-amber-400 bg-amber-500/10'
+                          match.compatibility_level === "highly_compatible"
+                            ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10"
+                            : "border-amber-500/30 text-amber-400 bg-amber-500/10"
                         }`}
                       >
-                        {match.compatibility_level === 'highly_compatible' ? 'High' : 'Moderate'}
+                        {match.compatibility_level === "highly_compatible" ? "High" : "Moderate"}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-center">
-                      {renderStatusBadge(match.status)}
-                    </TableCell>
+                    <TableCell className="text-center">{renderStatusBadge(match.status)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         {isPending && (
@@ -409,24 +332,16 @@ export const MatchesListView = () => {
                             disabled={isSending}
                             className="text-blue-400/70 hover:text-blue-400 hover:bg-blue-500/10"
                           >
-                            {isSending ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <>
-                                <Send className="h-4 w-4 mr-1" />
-                                Notify
-                              </>
-                            )}
+                            {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                           </Button>
                         )}
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleViewDetails(match)}
-                          className="text-silver/60 hover:text-white hover:bg-white/10"
+                          className="text-silver/50 hover:text-white hover:bg-white/5"
                         >
-                          <Eye className="h-4 w-4 mr-1" />
-                          Details
+                          <Eye className="h-4 w-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -438,33 +353,30 @@ export const MatchesListView = () => {
         )}
       </ScrollArea>
 
-      {/* Match Details Dialog */}
+      {/* Details Dialog */}
       <Dialog open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
-        <DialogContent className="bg-charcoal border-white/10 max-w-lg">
+        <DialogContent className="bg-charcoal border-white/10 max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-white font-light">
-              {selectedMatch?.founder_a?.name || "Founder A"} 
-              <span className="text-silver/40 mx-2">×</span>
-              {selectedMatch?.founder_b?.name || "Founder B"}
+              {selectedMatch?.founder_a?.name || "Founder A"} ↔ {selectedMatch?.founder_b?.name || "Founder B"}
             </DialogTitle>
           </DialogHeader>
-          
           {selectedMatch && (
             <MatchDetails
               match={{
                 id: selectedMatch.id,
                 total_score: selectedMatch.total_score,
-                compatibility_level: (selectedMatch.compatibility_level as 'highly_compatible' | 'somewhat_compatible') || 'somewhat_compatible',
-                status: selectedMatch.status,
+                compatibility_level: (selectedMatch.compatibility_level as "highly_compatible" | "somewhat_compatible") || "somewhat_compatible",
                 dimension_scores: {
-                  skills: selectedMatch.score_skills || 0,
-                  stage: selectedMatch.score_stage || 0,
-                  communication: selectedMatch.score_communication || 0,
-                  vision: selectedMatch.score_vision || 0,
-                  values: selectedMatch.score_values || 0,
-                  geo: selectedMatch.score_geo || 0,
-                  advantages: selectedMatch.score_advantages || 0,
+                  skills: selectedMatch.score_skills ?? 0,
+                  stage: selectedMatch.score_stage ?? 0,
+                  communication: selectedMatch.score_communication ?? 0,
+                  vision: selectedMatch.score_vision ?? 0,
+                  values: selectedMatch.score_values ?? 0,
+                  geo: selectedMatch.score_geo ?? 0,
+                  advantages: selectedMatch.score_advantages ?? 0,
                 },
+                status: selectedMatch.status,
               }}
               onStatusChange={() => {
                 fetchMatches();

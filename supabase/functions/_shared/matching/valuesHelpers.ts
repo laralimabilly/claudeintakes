@@ -222,3 +222,46 @@ export function scoreEquity(a: EquityPhilosophy, b: EquityPhilosophy): number {
   // Default moderate compatibility
   return 50;
 }
+
+// ---------------------------------------------------------------------------
+// Config-driven variants (used by scoring functions with system_parameters)
+// ---------------------------------------------------------------------------
+
+interface DimensionScoresConfig {
+  same: number;
+  adjacent: number;
+  opposite: number;
+  unknown: number;
+}
+
+interface EquityCompatConfig {
+  same: number;
+  flexible_any: number;
+  equal_contribution: number;
+  equal_majority: number;
+  default: number;
+}
+
+/** Score a dimension using config thresholds */
+export function scoreDimensionWithConfig(a: ValueScore, b: ValueScore, cfg: DimensionScoresConfig): number {
+  if (a === 'unknown' || b === 'unknown') return cfg.unknown;
+  if (a === b) return cfg.same;
+  if (a === 'medium' || b === 'medium') return cfg.adjacent;
+  return cfg.opposite;
+}
+
+/** Score equity using config thresholds */
+export function scoreEquityWithConfig(a: EquityPhilosophy, b: EquityPhilosophy, cfg: EquityCompatConfig): number {
+  if (a === 'unknown' || b === 'unknown') return cfg.default;
+  if (a === b) return cfg.same;
+  if (a === 'flexible' || b === 'flexible') return cfg.flexible_any;
+  if (
+    (a === 'equal' && b === 'contribution_based') ||
+    (a === 'contribution_based' && b === 'equal')
+  ) return cfg.equal_contribution;
+  if (
+    (a === 'clear_majority' && b === 'equal') ||
+    (a === 'equal' && b === 'clear_majority')
+  ) return cfg.equal_majority;
+  return cfg.default;
+}

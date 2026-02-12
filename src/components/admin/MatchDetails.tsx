@@ -5,6 +5,7 @@ import { StatusBadge } from "./StatusBadge";
 import { canNotify, isActive } from "@/types/matchStatus";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useMatchingWeights } from "@/contexts/SystemParametersContext";
 import { Send, Loader2, Check } from "lucide-react";
 
 interface DimensionScores {
@@ -28,16 +29,6 @@ interface MatchDetailsProps {
   onStatusChange?: () => void;
 }
 
-const DIMENSION_CONFIG = [
-  { key: 'skills', label: 'Skills Complementarity', weight: 27 },
-  { key: 'stage', label: 'Stage & Timeline', weight: 23 },
-  { key: 'communication', label: 'Communication Style', weight: 19 },
-  { key: 'vision', label: 'Vision Alignment', weight: 15 },
-  { key: 'values', label: 'Working Values', weight: 11 },
-  { key: 'geo', label: 'Geographic Fit', weight: 3 },
-  { key: 'advantages', label: 'Advantage Synergy', weight: 2 },
-] as const;
-
 const STEPPER_STEPS = [
   { key: 'notified_a', label: 'Notified A' },
   { key: 'a_interested', label: 'A Interested' },
@@ -59,6 +50,17 @@ const getScoreTextColor = (score: number): string => {
   return 'text-red-400';
 };
 
+// Fallback config if context hasn't loaded yet
+const FALLBACK_DIMENSIONS: { key: string; label: string; weight: number }[] = [
+  { key: 'skills', label: 'Skills Complementarity', weight: 30 },
+  { key: 'stage', label: 'Stage & Timeline', weight: 20 },
+  { key: 'communication', label: 'Communication Style', weight: 18 },
+  { key: 'values', label: 'Working Values', weight: 15 },
+  { key: 'vision', label: 'Vision Alignment', weight: 12 },
+  { key: 'geo', label: 'Geographic Fit', weight: 3 },
+  { key: 'advantages', label: 'Advantage Synergy', weight: 2 },
+];
+
 function MatchStepper({ status }: { status: string }) {
   const currentIndex = STEPPER_STEPS.findIndex((s) => s.key === status);
 
@@ -67,7 +69,6 @@ function MatchStepper({ status }: { status: string }) {
       {STEPPER_STEPS.map((step, i) => {
         const isPast = currentIndex > i;
         const isCurrent = currentIndex === i;
-        const isFuture = currentIndex < i;
 
         return (
           <div key={step.key} className="flex items-center">
@@ -108,6 +109,18 @@ export const MatchDetails = ({ match, onStatusChange }: MatchDetailsProps) => {
   const statusKey = status || 'pending';
   const [isSending, setIsSending] = useState(false);
   const { toast } = useToast();
+  const matchingWeights = useMatchingWeights();
+
+  // Build dimension config from system parameters or use fallback
+  const dimensionConfig = matchingWeights
+    ? (Object.entries(matchingWeights.dimensions) as [string, { label: string; weight: number }][])
+        .map(([key, dim]) => ({
+          key,
+          label: dim.label,
+          weight: Math.round(dim.weight * 100),
+        }))
+        .sort((a, b) => b.weight - a.weight)
+    : FALLBACK_DIMENSIONS;
 
   const handleSendNotification = async () => {
     if (!id) return;
@@ -161,7 +174,6 @@ export const MatchDetails = ({ match, onStatusChange }: MatchDetailsProps) => {
             <div className="text-sm text-silver/50">Overall Match Score</div>
           </div>
 
-          {/* Send Notification button for pending matches */}
           {canNotify(statusKey) && id && (
             <Button
               variant="outline"
@@ -180,7 +192,6 @@ export const MatchDetails = ({ match, onStatusChange }: MatchDetailsProps) => {
           )}
         </div>
 
-        {/* Stepper for active flow */}
         {isActive(statusKey) && (
           <div className="mt-3 pt-3 border-t border-white/5">
             <MatchStepper status={statusKey} />
@@ -193,7 +204,7 @@ export const MatchDetails = ({ match, onStatusChange }: MatchDetailsProps) => {
           Score Breakdown
         </div>
 
-        {DIMENSION_CONFIG.map(({ key, label, weight }) => {
+        {dimensionConfig.map(({ key, label, weight }) => {
           const score = dimension_scores[key as keyof DimensionScores];
           
           return (

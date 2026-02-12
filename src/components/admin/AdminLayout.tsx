@@ -10,15 +10,16 @@ import {
   Home,
   Wrench,
   ListChecks,
-  MessageSquare
+  MessageSquare,
+  Settings
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
-  activeSection: "profiles" | "matching" | "matches" | "tools" | "whatsapp";
-  onSectionChange: (section: "profiles" | "matching" | "matches" | "tools" | "whatsapp") => void;
+  activeSection: "profiles" | "matching" | "matches" | "tools" | "whatsapp" | "config";
+  onSectionChange: (section: "profiles" | "matching" | "matches" | "tools" | "whatsapp" | "config") => void;
 }
 
 const navItems = [
@@ -27,6 +28,7 @@ const navItems = [
   { id: "matches" as const, label: "Matches", icon: ListChecks, description: "View computed matches" },
   { id: "tools" as const, label: "Tools", icon: Wrench, description: "System utilities" },
   { id: "whatsapp" as const, label: "WhatsApp", icon: MessageSquare, description: "View conversations" },
+  { id: "config" as const, label: "Config", icon: Settings, description: "System parameters" },
 ];
 
 export const AdminLayout = ({ children, activeSection, onSectionChange }: AdminLayoutProps) => {

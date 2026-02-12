@@ -1,9 +1,11 @@
 // src/components/admin/MatchingView.tsx
 // Updated to use 7-dimension matching with dealbreakers
+// Now reads thresholds from system_parameters via context
 
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useMatchingWeights } from "@/contexts/SystemParametersContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -39,6 +41,9 @@ export const MatchingView = () => {
     matchResult: MatchResult;
   } | null>(null);
   const { toast } = useToast();
+  const matchingWeights = useMatchingWeights();
+  const highThreshold = matchingWeights?.highly_compatible_threshold ?? 75;
+  const minThreshold = matchingWeights?.min_match_score ?? 60;
 
   useEffect(() => {
     fetchProfiles();
@@ -192,7 +197,7 @@ export const MatchingView = () => {
   };
 
   const ScoreBadge = ({ score, compatibilityLevel }: { score: number; compatibilityLevel?: 'highly_compatible' | 'somewhat_compatible' }) => {
-    const tier = score >= 75 ? "excellent" : score >= 60 ? "good" : score >= 45 ? "fair" : "low";
+    const tier = score >= highThreshold ? "excellent" : score >= minThreshold ? "good" : score >= 45 ? "fair" : "low";
     
     const colors = {
       excellent: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
@@ -412,9 +417,9 @@ export const MatchingView = () => {
                               <div className="flex items-center justify-between text-[9px]">
                                 <span className="text-silver/50">Total Score</span>
                                 <span className={`font-medium ${
-                                  matchData.matchResult.total_score >= 75 
+                                  matchData.matchResult.total_score >= highThreshold 
                                     ? 'text-emerald-400' 
-                                    : matchData.matchResult.total_score >= 60 
+                                    : matchData.matchResult.total_score >= minThreshold 
                                       ? 'text-blue-400' 
                                       : 'text-amber-400'
                                 }`}>

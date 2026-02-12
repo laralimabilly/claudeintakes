@@ -2,6 +2,7 @@
 // ============================================================================
 // Sends WhatsApp match notification to Founder A (the one who joined first).
 // Accepts { matchId } or legacy { founderIds: [id1, id2] }.
+// Now reads highly_compatible_threshold from system_parameters.
 // ============================================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -14,6 +15,20 @@ const corsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+
+async function getHighlyCompatibleThreshold(supabase: any): Promise<number> {
+  const { data, error } = await supabase
+    .from("system_parameters")
+    .select("value")
+    .eq("system_key", "MATCHING_WEIGHTS")
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to load MATCHING_WEIGHTS: ${error?.message ?? "not found"}`);
+  }
+
+  return data.value.highly_compatible_threshold;
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -60,12 +75,14 @@ Deno.serve(async (req) => {
       );
     }
 
+    // --- Load threshold from DB ---
+    const highlyCompatibleThreshold = await getHighlyCompatibleThreshold(serviceClient);
+
     // --- Parse request ---
     const body = await req.json();
     let matchId: string | undefined = body.matchId;
     const founderIds: string[] | undefined = body.founderIds;
 
-    // Legacy: if founderIds passed with exactly 2, look up or create match
     if (!matchId && founderIds && Array.isArray(founderIds) && founderIds.length === 2) {
       const { data: existingMatch } = await serviceClient
         .from("founder_matches")
@@ -131,13 +148,13 @@ Deno.serve(async (req) => {
     const founderB = sorted[1];
     const sideA = founderA.id === match.founder_id ? "a" : "b";
 
-    // --- Pick template based on score ---
+    // --- Pick template based on configurable threshold ---
     const score = Math.round(match.total_score);
     const compatLevel =
-      match.compatibility_level || (score >= 75 ? "highly_compatible" : "somewhat_compatible");
+      match.compatibility_level || (score >= highlyCompatibleThreshold ? "highly_compatible" : "somewhat_compatible");
 
     const templateName =
-      score >= 75 ? "highly_compatible_initial" : "somewhat_compatible_initial";
+      score >= highlyCompatibleThreshold ? "highly_compatible_initial" : "somewhat_compatible_initial";
 
     const matchData = {
       total_score: match.total_score,
