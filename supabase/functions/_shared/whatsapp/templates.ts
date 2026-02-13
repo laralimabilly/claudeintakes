@@ -120,6 +120,11 @@ function topAlignments(
       score: match.score_geo,
       label: buildGeoAlignment(founder, other),
     },
+    {
+      key: "advantages",
+      score: match.score_advantages,
+      label: buildAdvantagesAlignment(founder, other),
+    },
   ];
 
   return dims
@@ -161,6 +166,11 @@ function topGaps(
       key: "geo",
       score: match.score_geo,
       label: buildGeoGap(founder, other),
+    },
+    {
+      key: "advantages",
+      score: match.score_advantages,
+      label: buildAdvantagesGap(founder, other),
     },
   ];
 
@@ -213,11 +223,46 @@ function buildGeoAlignment(a: FounderData, b: FounderData): string {
   return `Location compatible`;
 }
 
+function buildAdvantagesAlignment(a: FounderData, b: FounderData): string {
+  const aHasFounderExp = a.previous_founder;
+  const bHasFounderExp = b.previous_founder;
+
+  if (aHasFounderExp && !bHasFounderExp) {
+    return `Your founder experience complements ${firstName(b.name)}'s fresh perspective`;
+  }
+  if (!aHasFounderExp && bHasFounderExp) {
+    return `${firstName(b.name)} brings prior founder experience to the table`;
+  }
+  if (aHasFounderExp && bHasFounderExp) {
+    return `Both bring prior founder experience`;
+  }
+
+  // Fall back to superpower/background
+  const aSuperpower = a.superpower;
+  const bSuperpower = b.superpower;
+  if (aSuperpower && bSuperpower) {
+    return `Complementary strengths — your ${aSuperpower} pairs with their ${bSuperpower}`;
+  }
+
+  return `Complementary unfair advantages`;
+}
+
 function buildGeoGap(a: FounderData, b: FounderData): string {
   if (a.location_preference && b.location_preference) {
     return `Different locations (${a.location_preference} vs ${b.location_preference}) — discuss remote setup`;
   }
   return `Location preferences may need discussion`;
+}
+
+function buildAdvantagesGap(a: FounderData, b: FounderData): string {
+  const aSkills = new Set((a.core_skills || []).map(s => s.toLowerCase()));
+  const bSkills = new Set((b.core_skills || []).map(s => s.toLowerCase()));
+  const overlap = [...aSkills].filter(s => bSkills.has(s));
+
+  if (overlap.length > 1) {
+    return `Overlapping strengths (${overlap.slice(0, 2).join(", ")}) — discuss who owns what`;
+  }
+  return `Advantage coverage could be stronger — worth discussing what each person uniquely brings`;
 }
 
 /** One-sentence summary of the match */
