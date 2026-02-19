@@ -24,6 +24,7 @@ interface VapiWebhookPayload {
     transcript?: string;
     summary?: string;
     structuredData?: {
+      name?: string;
       whatsapp?: string;
       idea_description?: string;
       problem_solving?: string;
@@ -46,7 +47,7 @@ interface VapiWebhookPayload {
       deal_breakers?: string[];
       equity_thoughts?: string;
       seriousness_score?: number;
-      preferred_contact?: string;
+      
       match_frequency_preference?: string;
       success_criteria?: string;
       willingness_to_pay?: string;
@@ -105,10 +106,24 @@ serve(async (req) => {
       });
     }
 
-    // Only process if we have structured data
+    // Only process if we have structured data with meaningful content
     if (!structuredData) {
       console.log("No structured data found, acknowledging webhook");
       return new Response(JSON.stringify({ success: true, message: "No structured data to process" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Check if structured data has any meaningful values (not all null/empty)
+    const hasContent = Object.values(structuredData).some(
+      (val) => val !== null && val !== undefined && val !== "" && 
+               !(Array.isArray(val) && val.length === 0)
+    );
+
+    if (!hasContent) {
+      console.log("Structured data is empty, skipping profile creation");
+      return new Response(JSON.stringify({ success: true, message: "No meaningful data to process" }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -149,6 +164,7 @@ serve(async (req) => {
     const profileData = {
       vapi_call_id: callId,
       phone_number: finalPhoneNumber,
+      name: structuredData.name || null,
       whatsapp: structuredData.whatsapp || null,
       idea_description: structuredData.idea_description || null,
       problem_solving: structuredData.problem_solving || null,
@@ -171,7 +187,7 @@ serve(async (req) => {
       deal_breakers: structuredData.deal_breakers || null,
       equity_thoughts: structuredData.equity_thoughts || null,
       seriousness_score: structuredData.seriousness_score || null,
-      preferred_contact: structuredData.preferred_contact || null,
+      
       match_frequency_preference: structuredData.match_frequency_preference || null,
       success_criteria: structuredData.success_criteria || null,
       willingness_to_pay: structuredData.willingness_to_pay || null,
@@ -181,11 +197,11 @@ serve(async (req) => {
 
     console.log("Inserting profile data for call:", callId);
 
-    // Upsert data into founder_profiles table
+    // Upsert data into founder_profiles table (phone_number is unique)
     const { data, error } = await supabase
       .from("founder_profiles")
       .upsert(profileData, {
-        onConflict: "vapi_call_id",
+        onConflict: "phone_number",
         ignoreDuplicates: false,
       })
       .select()

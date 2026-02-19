@@ -1,4 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sendWhatsAppMessage } from "../_shared/whatsapp/sendMessage.ts";
+import { generateMessage } from "../_shared/whatsapp/templates.ts";
+import { getConversationByFounderId, setConversationState } from "../_shared/whatsapp/conversationState.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -129,7 +132,7 @@ Deno.serve(async (req) => {
       deal_breakers: structuredData.deal_breakers || null,
       equity_thoughts: structuredData.equity_thoughts || null,
       seriousness_score: structuredData.seriousness_score || null,
-      preferred_contact: structuredData.preferred_contact || null,
+      
       match_frequency_preference: structuredData.match_frequency_preference || null,
       success_criteria: structuredData.success_criteria || null,
       willingness_to_pay: structuredData.willingness_to_pay || null,
@@ -149,6 +152,30 @@ Deno.serve(async (req) => {
     }
 
     console.log("Profile upserted successfully:", data.id);
+
+    // Send onboarding WhatsApp message if this founder has no conversation history
+    const phoneNumber = data.phone_number || profileData.phone_number;
+    if (phoneNumber) {
+      const existingConversation = await getConversationByFounderId(serviceClient, data.id);
+
+      if (!existingConversation) {
+        console.log(`[import] No conversation for founder ${data.id}, sending onboarding message`);
+
+        const onboardingMsg = generateMessage("onboarding_confirmation", { founder: data });
+
+        await setConversationState(serviceClient, {
+          founderId: data.id,
+          phoneNumber,
+          state: "IDLE",
+          context: {},
+        });
+
+        await sendWhatsAppMessage({ to: phoneNumber, body: onboardingMsg, supabase: serviceClient });
+        console.log(`[import] Onboarding message sent to ${phoneNumber}`);
+      } else {
+        console.log(`[import] Founder ${data.id} already has a conversation, skipping onboarding`);
+      }
+    }
 
     return new Response(
       JSON.stringify({ success: true, profile: data }),

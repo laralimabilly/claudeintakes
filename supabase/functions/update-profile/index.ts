@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
     }
 
     // User is authenticated and has admin role - proceed with update
-    const { profileId, matched, status, admin_notes } = await req.json();
+    const { profileId, matched, status, admin_notes, name } = await req.json();
 
     if (!profileId) {
       return new Response(
@@ -93,7 +93,6 @@ Deno.serve(async (req) => {
     }
     
     if (admin_notes !== undefined) {
-      // Limit admin notes length
       if (typeof admin_notes === 'string' && admin_notes.length > 10000) {
         return new Response(
           JSON.stringify({ error: "Admin notes too long. Maximum 10,000 characters." }),
@@ -101,6 +100,16 @@ Deno.serve(async (req) => {
         );
       }
       updateData.admin_notes = admin_notes;
+    }
+
+    if (name !== undefined) {
+      if (typeof name === 'string' && name.length > 200) {
+        return new Response(
+          JSON.stringify({ error: "Name too long. Maximum 200 characters." }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
+        );
+      }
+      updateData.name = name;
     }
 
     if (Object.keys(updateData).length === 0) {

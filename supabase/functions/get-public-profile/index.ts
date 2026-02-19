@@ -65,6 +65,8 @@ Deno.serve(async (req) => {
         equity_thoughts,
         success_criteria,
         willingness_to_pay,
+        seriousness_score,
+        call_summary,
         created_at
       `)
       .eq("id", profileId)

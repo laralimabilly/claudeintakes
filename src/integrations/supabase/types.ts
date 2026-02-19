@@ -205,6 +205,7 @@ export type Database = {
           status: Database["public"]["Enums"]["founder_status"]
           success_criteria: string | null
           superpower: string | null
+          tagline: string | null
           target_customer: string | null
           timeline_start: string | null
           urgency_level: string | null
@@ -247,6 +248,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["founder_status"]
           success_criteria?: string | null
           superpower?: string | null
+          tagline?: string | null
           target_customer?: string | null
           timeline_start?: string | null
           urgency_level?: string | null
@@ -289,6 +291,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["founder_status"]
           success_criteria?: string | null
           superpower?: string | null
+          tagline?: string | null
           target_customer?: string | null
           timeline_start?: string | null
           urgency_level?: string | null

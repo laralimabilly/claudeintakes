@@ -27,9 +27,15 @@ export const HeroSection = () => {
 
       if (error) {
         console.error('Error initiating call:', error);
+        const errorBody = typeof error === 'object' && error.message ? error.message : '';
+        const isAlreadyRegistered = errorBody.includes('already registered') || 
+          (data && data.alreadyRegistered);
+        
         toast({
-          title: "Something went wrong. Please try again.",
-          variant: "destructive",
+          title: isAlreadyRegistered 
+            ? "You're already in our system! We'll be in touch soon 🎉" 
+            : "Something went wrong. Please try again.",
+          variant: isAlreadyRegistered ? "default" : "destructive",
         });
         return;
       }

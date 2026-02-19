@@ -22,6 +22,8 @@ import {
   Briefcase,
   Zap,
   BarChart3,
+  AlertCircle,
+  Target,
 } from "lucide-react";
 import type { FounderProfile, AIMatchResult, MatchResult } from "@/types/founder";
 import { findHybridMatches } from "@/lib/matchingUtils";
@@ -281,38 +283,83 @@ export const MatchingView = () => {
                   }`}
                   onClick={() => !isSelected && addToMatch(profile)}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-sm font-medium text-white truncate">
-                          {profile.name || "Anonymous"}
-                        </h4>
-                        {score !== null && (
-                          <ScoreBadge 
-                            score={score} 
-                            compatibilityLevel={matchData?.matchResult?.compatibility_level}
-                          />
-                        )}
-                      </div>
-                      <p className="text-xs text-silver/50 line-clamp-2 mt-1">
-                        {profile.idea_description || "No description"}
-                      </p>
-                      
-                      <div className="flex items-center gap-3 mt-2 text-[10px] text-silver/40">
-                        {profile.location_preference && (
-                          <span className="flex items-center gap-1">
-                            <MapPin className="h-2.5 w-2.5" />
-                            {profile.location_preference}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0 space-y-1.5">
+                        {/* Row 1: Name + Status + Score */}
+                        <div className="flex items-center gap-2">
+                          {!profile.name && (
+                            <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                          )}
+                          <h4 className={`text-sm font-medium truncate ${!profile.name ? "text-amber-400/80 italic" : "text-white"}`}>
+                            {profile.name || "Anonymous Founder"}
+                          </h4>
+                          <span className={`px-1.5 py-0.5 text-[10px] tracking-wider uppercase whitespace-nowrap shrink-0 ${
+                            profile.status === 'contacted' ? 'bg-silver/30 text-white' :
+                            profile.status === 'matched' ? 'bg-white/20 text-white' :
+                            profile.status === 'reviewed' ? 'bg-silver/20 text-silver' :
+                            'bg-white/10 text-white/70'
+                          }`}>
+                            {(profile.status || 'new').toUpperCase()}
                           </span>
-                        )}
-                        {profile.cofounder_type && (
-                          <span className="flex items-center gap-1">
-                            <Briefcase className="h-2.5 w-2.5" />
-                            seeks {profile.cofounder_type}
-                          </span>
-                        )}
+                          {score !== null && (
+                            <ScoreBadge 
+                              score={score} 
+                              compatibilityLevel={matchData?.matchResult?.compatibility_level}
+                            />
+                          )}
+                          <div className="flex items-center gap-2 text-xs text-silver/50 shrink-0 ml-auto">
+                            <span className="tabular-nums">{profile.seriousness_score || 0}/10</span>
+                            <div className="w-12 h-1 bg-white/5 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-white/40 transition-all" 
+                                style={{ width: `${(profile.seriousness_score || 0) * 10}%` }} 
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        {/* Row 2: Tagline / summary */}
+                        <p className="text-xs text-silver/50 truncate">
+                          {(profile as any).tagline || profile.idea_description || "No description"}
+                        </p>
+                        {/* Row 3: Structured badges */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {profile.stage && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-white/5 text-silver/50 rounded-sm whitespace-nowrap">
+                              <Target className="h-2.5 w-2.5 shrink-0" />
+                              {profile.stage.length > 25 ? profile.stage.slice(0, 25) + "…" : profile.stage}
+                            </span>
+                          )}
+                          {profile.location_preference && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-white/5 text-silver/50 rounded-sm whitespace-nowrap">
+                              <MapPin className="h-2.5 w-2.5 shrink-0" />
+                              {profile.location_preference.length > 25 ? profile.location_preference.slice(0, 25) + "…" : profile.location_preference}
+                            </span>
+                          )}
+                          {profile.core_skills && profile.core_skills.length > 0 && (
+                            <>
+                              {profile.core_skills.slice(0, 2).map((skill, idx) => (
+                                <span key={idx} className="px-1.5 py-0.5 text-[10px] bg-white/5 text-silver/40 rounded-sm whitespace-nowrap">
+                                  {skill}
+                                </span>
+                              ))}
+                              {profile.core_skills.length > 2 && (
+                                <span className="text-[10px] text-silver/30">+{profile.core_skills.length - 2}</span>
+                              )}
+                            </>
+                          )}
+                          {profile.cofounder_type && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] border border-white/10 text-silver/40 rounded-sm whitespace-nowrap">
+                              <Briefcase className="h-2.5 w-2.5 mr-0.5" />
+                              seeks {profile.cofounder_type.length > 18 ? profile.cofounder_type.slice(0, 18) + "…" : profile.cofounder_type}
+                            </span>
+                          )}
+                          {profile.commitment_level && (
+                            <span className="px-1.5 py-0.5 text-[10px] text-silver/30 whitespace-nowrap">
+                              {profile.commitment_level}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
                     <div className="flex items-center gap-1">
                       {matchData?.matchResult && (
                         <Button

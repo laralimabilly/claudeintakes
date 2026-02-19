@@ -5,6 +5,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { calculateMatchScore } from './matching/calculateMatch';
 import { checkDealbreakers } from './matching/dealbreakers';
 import type { FounderProfile, FounderProfileForMatching, AIMatchResult, MatchResult } from '@/types/founder';
+import type { MatchingWeightsConfig } from '@/types/systemParameters';
 
 export type { FounderProfile, AIMatchResult, MatchResult };
 
@@ -47,7 +48,8 @@ export async function findHybridMatches(
   founderId: string,
   founderProfile: FounderProfile,
   threshold: number = 0.70,
-  limit: number = 20
+  limit: number = 20,
+  matchingWeightsConfig?: MatchingWeightsConfig | null
 ): Promise<AIMatchResult[]> {
   // 1. Get AI matches from edge function (secure)
   const aiMatches = await findAIMatches(founderId, threshold, limit);
@@ -130,11 +132,14 @@ export async function findHybridMatches(
 
   console.log('[findHybridMatches] Enhanced matches after filtering:', enhancedMatches.length);
 
-  // 3. Re-rank using weighted combination (60% AI similarity, 40% 7-dimension score)
+  // 3. Re-rank using weighted combination from config (default 60% AI, 40% 7-dimension)
+  const aiWeight = matchingWeightsConfig?.hybrid_weights?.ai_similarity ?? 0.6;
+  const dimWeight = matchingWeightsConfig?.hybrid_weights?.dimension_score ?? 0.4;
+
   const reranked = enhancedMatches
     .map(match => ({
       ...match,
-      combinedScore: (match.similarity * 0.6) + ((match.matchResult?.total_score || 0) / 100 * 0.4),
+      combinedScore: (match.similarity * aiWeight) + ((match.matchResult?.total_score || 0) / 100 * dimWeight),
     }))
     .sort((a, b) => (b.combinedScore || 0) - (a.combinedScore || 0))
     .slice(0, 10);

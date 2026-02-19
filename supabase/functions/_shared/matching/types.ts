@@ -47,6 +47,10 @@ export interface MatchResult {
 export interface MatchingConfig {
   min_match_score: number;
   highly_compatible_threshold: number;
+  hybrid_weights?: {
+    ai_similarity: number;
+    dimension_score: number;
+  };
   dimensions: {
     skills: SkillsConfig;
     stage: StageConfig;

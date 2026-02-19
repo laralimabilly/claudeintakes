@@ -263,6 +263,11 @@ export const SystemParametersView = () => {
       toast({ title: "Invalid weights", description: "Dimension weights must sum to 1 (100%).", variant: "destructive" });
       return;
     }
+    const hSum = (draft.hybrid_weights?.ai_similarity ?? 0.6) + (draft.hybrid_weights?.dimension_score ?? 0.4);
+    if (Math.abs(hSum - 1) > 0.005) {
+      toast({ title: "Invalid hybrid weights", description: "AI + Dimension weights must sum to 1 (100%).", variant: "destructive" });
+      return;
+    }
     setSaving(true);
     try {
       await updateParameter("MATCHING_WEIGHTS", draft);
@@ -339,6 +344,42 @@ export const SystemParametersView = () => {
             hint="Score threshold for 'highly compatible' label"
           />
         </div>
+      </Card>
+
+      {/* Hybrid weights */}
+      <Card className="bg-white/[0.03] border-white/5 p-4">
+        <h2 className="text-sm font-semibold text-white mb-3">Hybrid Re-ranking Weights</h2>
+        <p className="text-[11px] text-silver/40 mb-3">Controls how AI embedding similarity and 7-dimension scores are blended when re-ranking matches. Must sum to 1 (100%).</p>
+        <div className="grid grid-cols-2 gap-4">
+          <NumberField
+            label="AI Similarity Weight"
+            value={draft.hybrid_weights?.ai_similarity ?? 0.6}
+            onChange={(v) => handleUpdate("hybrid_weights.ai_similarity", v)}
+            step={0.05}
+            min={0}
+            max={1}
+            hint="Weight for embedding cosine similarity"
+          />
+          <NumberField
+            label="Dimension Score Weight"
+            value={draft.hybrid_weights?.dimension_score ?? 0.4}
+            onChange={(v) => handleUpdate("hybrid_weights.dimension_score", v)}
+            step={0.05}
+            min={0}
+            max={1}
+            hint="Weight for 7-dimension scoring"
+          />
+        </div>
+        {(() => {
+          const hSum = (draft.hybrid_weights?.ai_similarity ?? 0.6) + (draft.hybrid_weights?.dimension_score ?? 0.4);
+          const valid = Math.abs(hSum - 1) < 0.005;
+          return (
+            <div className={`flex items-center gap-2 text-xs mt-3 px-2 py-1 rounded ${valid ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
+              {!valid && <AlertTriangle className="h-3 w-3" />}
+              <span>Hybrid weight total: <strong>{(hSum * 100).toFixed(0)}%</strong>{valid ? " ✓" : " — must equal 100%"}</span>
+            </div>
+          );
+        })()}
       </Card>
 
       {/* Weight sum indicator */}

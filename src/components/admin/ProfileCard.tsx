@@ -12,7 +12,7 @@ interface ProfileCardProps {
 }
 
 export const ProfileCard = ({ profile, onViewDetails, isSelected, onToggleSelect }: ProfileCardProps) => {
-  const identifier = profile.whatsapp || profile.phone_number || "Unknown";
+  const identifier = profile.name || profile.phone_number || "Unknown";
   const ideaTruncated = profile.idea_description?.slice(0, 120) || "No description";
   const seriousnessPercent = (profile.seriousness_score || 0) * 10;
 

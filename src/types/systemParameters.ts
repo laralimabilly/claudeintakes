@@ -18,6 +18,10 @@ export interface SystemParameter<T = unknown> {
 export interface MatchingWeightsConfig {
   min_match_score: number;
   highly_compatible_threshold: number;
+  hybrid_weights?: {
+    ai_similarity: number;
+    dimension_score: number;
+  };
   dimensions: {
     skills: {
       weight: number;

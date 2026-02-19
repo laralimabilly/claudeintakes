@@ -199,7 +199,10 @@ serve(async (req) => {
 
       } catch (error) {
         results.failed++;
-        const errorMsg = `Failed to process ${profile.id}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        const rawMsg = error instanceof Error ? error.message : 'Unknown error';
+        // Sanitize error messages to prevent leaking secrets
+        const safeMsg = rawMsg.replace(/sk-[a-zA-Z0-9_-]+/g, '[REDACTED]');
+        const errorMsg = `Failed to process ${profile.id}: ${safeMsg}`;
         results.errors.push(errorMsg);
         console.error(errorMsg);
       }
@@ -217,9 +220,11 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error("Error in backfill-embeddings:", error);
+    const rawMsg = error instanceof Error ? error.message : "Unknown error";
+    const safeMsg = rawMsg.replace(/sk-[a-zA-Z0-9_-]+/g, '[REDACTED]');
+    console.error("Error in backfill-embeddings:", safeMsg);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ error: safeMsg }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

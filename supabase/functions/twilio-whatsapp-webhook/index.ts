@@ -634,6 +634,25 @@ Deno.serve(async (req) => {
     // ---- State-aware handling ----
     const conversation = await getConversation(supabase, phoneNumber);
 
+    // Founder exists but has never been onboarded via WhatsApp → send onboarding message
+    if (!conversation) {
+      console.log(`[onboarding] No conversation record for founder ${founder.id}, sending onboarding message`);
+
+      const onboardingMsg = generateMessage("onboarding_confirmation", { founder });
+
+      // Create IDLE conversation state so future messages are handled normally
+      await setConversationState(supabase, {
+        founderId: founder.id,
+        phoneNumber,
+        state: "IDLE",
+        context: {},
+      });
+
+      await sendWhatsAppMessage({ to: from, body: onboardingMsg, supabase });
+
+      return new Response(EMPTY_TWIML, { status: 200, headers: { "Content-Type": "application/xml" } });
+    }
+
     if (conversation && isInMatchFlow(conversation.current_state)) {
       console.log(`[matchFlow] Founder ${founder.id} in state ${conversation.current_state}`);
 

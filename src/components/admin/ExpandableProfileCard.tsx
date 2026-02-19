@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Eye, ChevronDown, ChevronUp, Link2, MapPin, Target, User } from "lucide-react";
+import { Eye, ChevronDown, ChevronUp, Link2, MapPin, Target, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { FounderProfile } from "@/types/founder";
 
@@ -22,8 +22,11 @@ export const ExpandableProfileCard = ({
   const [isExpanded, setIsExpanded] = useState(false);
   const { toast } = useToast();
 
-  const displayName = profile.name || "Anonymous Founder";
+  const isAnonymous = !profile.name;
+  const displayName = profile.name || profile.phone_number || "Anonymous Founder";
   const seriousnessPercent = (profile.seriousness_score || 0) * 10;
+  const taglineText = (profile as any).tagline as string | null;
+  const summaryPreview = taglineText || profile.idea_description || profile.call_summary?.slice(0, 120) || null;
 
   const statusConfig = {
     new: { label: "New", color: "bg-white/10 text-white/70" },
@@ -47,66 +50,101 @@ export const ExpandableProfileCard = ({
       }`}
     >
       {/* Collapsed Header - Always Visible */}
-      <div className="p-4 flex items-center gap-4">
-        <Checkbox
-          checked={isSelected}
-          onCheckedChange={onToggleSelect}
-          aria-label="Select profile"
-          className="border-white/20 data-[state=checked]:bg-white data-[state=checked]:border-white data-[state=checked]:text-charcoal"
-        />
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="text-sm font-medium text-white truncate">{displayName}</h3>
-            <span className={`px-1.5 py-0.5 text-[10px] tracking-wider uppercase ${status.color}`}>
+      <div className="p-4 space-y-2">
+        {/* Row 1: Name + Status + Score */}
+        <div className="flex items-center gap-3">
+          <Checkbox
+            checked={isSelected}
+            onCheckedChange={onToggleSelect}
+            aria-label="Select profile"
+            className="border-white/20 data-[state=checked]:bg-white data-[state=checked]:border-white data-[state=checked]:text-charcoal shrink-0"
+          />
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            {isAnonymous && (
+              <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+            )}
+            <h3 className={`text-sm font-medium truncate ${isAnonymous ? "text-amber-400/80 italic" : "text-white"}`}>
+              {displayName}
+            </h3>
+            <span className={`px-1.5 py-0.5 text-[10px] tracking-wider uppercase whitespace-nowrap shrink-0 ${status.color}`}>
               {status.label}
             </span>
           </div>
-          <div className="flex items-center gap-3 text-xs text-silver/50">
+          <div className="flex items-center gap-2 text-xs text-silver/50 shrink-0">
+            <span className="tabular-nums">{profile.seriousness_score || 0}/10</span>
+            <div className="w-12 h-1 bg-white/5 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-white/40 transition-all" 
+                style={{ width: `${seriousnessPercent}%` }} 
+              />
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="text-silver/40 hover:text-white hover:bg-white/5 h-8 w-8 p-0 shrink-0"
+          >
+            {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </Button>
+        </div>
+
+        {/* Row 2: Summary (1-line truncated) */}
+        {!isExpanded && summaryPreview && (
+          <p className="text-xs text-silver/50 truncate pl-9">
+            {summaryPreview}
+          </p>
+        )}
+
+        {/* Row 3: Structured badges */}
+        {!isExpanded && (
+          <div className="flex items-center gap-1.5 pl-9 flex-wrap">
             {profile.stage && (
-              <span className="flex items-center gap-1">
-                <Target className="h-3 w-3" />
-                {profile.stage}
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-white/5 text-silver/60 rounded-sm whitespace-nowrap">
+                <Target className="h-2.5 w-2.5 shrink-0" />
+                {profile.stage.length > 25 ? profile.stage.slice(0, 25) + "…" : profile.stage}
               </span>
             )}
             {profile.location_preference && (
-              <span className="flex items-center gap-1">
-                <MapPin className="h-3 w-3" />
-                {profile.location_preference}
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-white/5 text-silver/60 rounded-sm whitespace-nowrap">
+                <MapPin className="h-2.5 w-2.5 shrink-0" />
+                {profile.location_preference.length > 25 ? profile.location_preference.slice(0, 25) + "…" : profile.location_preference}
+              </span>
+            )}
+            {profile.core_skills && profile.core_skills.length > 0 && (
+              <>
+                {profile.core_skills.slice(0, 2).map((skill, idx) => (
+                  <span key={idx} className="px-1.5 py-0.5 text-[10px] bg-white/5 text-silver/50 rounded-sm whitespace-nowrap">
+                    {skill}
+                  </span>
+                ))}
+                {profile.core_skills.length > 2 && (
+                  <span className="text-[10px] text-silver/30">+{profile.core_skills.length - 2}</span>
+                )}
+              </>
+            )}
+            {profile.cofounder_type && (
+              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] border border-white/10 text-silver/50 rounded-sm whitespace-nowrap">
+                seeks {profile.cofounder_type.length > 20 ? profile.cofounder_type.slice(0, 20) + "…" : profile.cofounder_type}
               </span>
             )}
           </div>
-        </div>
-
-        {/* Seriousness Score */}
-        <div className="flex items-center gap-2 text-xs text-silver/50">
-          <span>{profile.seriousness_score || 0}/10</span>
-          <div className="w-12 h-1 bg-white/5 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-white/40 transition-all" 
-              style={{ width: `${seriousnessPercent}%` }} 
-            />
-          </div>
-        </div>
-
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="text-silver/40 hover:text-white hover:bg-white/5 h-8 w-8 p-0"
-        >
-          {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        </Button>
+        )}
       </div>
+
 
       {/* Expanded Content */}
       {isExpanded && (
         <div className="px-4 pb-4 pt-2 border-t border-white/5 animate-fade-in">
-          {/* Idea Description */}
-          {profile.idea_description && (
+          {/* Summary */}
+          {(profile.call_summary || profile.idea_description) && (
             <div className="mb-4">
-              <p className="text-xs text-silver/40 uppercase tracking-wider mb-1">Idea</p>
-              <p className="text-sm text-silver/70 leading-relaxed">{profile.idea_description}</p>
+              <p className="text-xs text-silver/40 uppercase tracking-wider mb-1">
+                {profile.call_summary ? "Summary" : "Idea"}
+              </p>
+              <p className="text-sm text-silver/70 leading-relaxed">
+                {profile.call_summary || profile.idea_description}
+              </p>
             </div>
           )}
 

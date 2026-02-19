@@ -1,0 +1,1 @@
+ALTER TABLE public.founder_profiles ADD COLUMN tagline TEXT;

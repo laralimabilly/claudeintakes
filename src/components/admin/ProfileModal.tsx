@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Download, Save, X, Link2 } from "lucide-react";
 import { useState } from "react";
@@ -24,6 +25,7 @@ interface ProfileModalProps {
 export const ProfileModal = ({ profile, onClose, onUpdate }: ProfileModalProps) => {
   const [status, setStatus] = useState<string>(profile.status || "new");
   const [adminNotes, setAdminNotes] = useState(profile.admin_notes || "");
+  const [name, setName] = useState(profile.name || "");
   const [isSaving, setIsSaving] = useState(false);
   const { toast } = useToast();
 
@@ -43,7 +45,8 @@ export const ProfileModal = ({ profile, onClose, onUpdate }: ProfileModalProps) 
         body: { 
           profileId: profile.id,
           status: status,
-          admin_notes: adminNotes 
+          admin_notes: adminNotes,
+          name: name || null,
         }
       });
 
@@ -84,7 +87,7 @@ CONTACT INFORMATION
 ──────────────────────────────────────────────────────────────
 Phone Number: ${formatValue(profile.phone_number)}
 WhatsApp: ${formatValue(profile.whatsapp)}
-Preferred Contact: ${formatValue(profile.preferred_contact)}
+
 
 IDEA & VISION
 ──────────────────────────────────────────────────────────────
@@ -253,6 +256,15 @@ Call ID: ${profile.vapi_call_id}
           <div className="px-8 py-6 space-y-8">
             {/* Status & Notes */}
             <div className="bg-charcoal/[0.02] border border-charcoal/5 rounded-sm p-6 space-y-5">
+              <div className="space-y-2">
+                <label className="text-xs tracking-widest uppercase text-charcoal/50 font-bold">Name</label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Founder name..."
+                  className="bg-white border-charcoal/10 text-charcoal placeholder:text-charcoal/40"
+                />
+              </div>
               <div className="space-y-2">
                 <label className="text-xs tracking-widest uppercase text-charcoal/50 font-bold">Pipeline Stage</label>
                 <Select value={status} onValueChange={setStatus}>

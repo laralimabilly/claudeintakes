@@ -18,7 +18,6 @@ interface VapiCallResponse {
 
 // Rate limit configuration
 const IP_RATE_LIMIT = 5; // Max 5 calls per IP per hour
-const PHONE_RATE_LIMIT = 1; // Max 1 call per phone number per hour
 const RATE_LIMIT_WINDOW_MINUTES = 60;
 
 async function checkRateLimit(
@@ -143,24 +142,25 @@ serve(async (req) => {
       );
     }
 
-    // Check phone-based rate limit (1 call per phone per hour)
-    const phoneRateLimitKey = `phone:${digitsOnly}`;
-    const phoneRateLimit = await checkRateLimit(supabase, phoneRateLimitKey, PHONE_RATE_LIMIT);
-    
-    if (!phoneRateLimit.allowed) {
-      console.warn(`Rate limit exceeded for phone: ${digitsOnly.slice(-4)}`);
+    // Check if this phone number already has a profile with meaningful data
+    const { data: existingProfile } = await supabase
+      .from('founder_profiles')
+      .select('id, name, status')
+      .eq('phone_number', phoneNumber)
+      .not('name', 'is', null)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingProfile) {
+      console.log(`Phone number already registered: ${digitsOnly.slice(-4)}, profile: ${existingProfile.id}`);
       return new Response(
         JSON.stringify({ 
-          error: "This phone number has already received a call recently. Please try again later.",
-          retryAfter: RATE_LIMIT_WINDOW_MINUTES * 60
+          error: "This phone number is already registered in our system. We'll be in touch soon!",
+          alreadyRegistered: true
         }),
         {
-          status: 429,
-          headers: { 
-            ...corsHeaders, 
-            'Content-Type': 'application/json',
-            'Retry-After': String(RATE_LIMIT_WINDOW_MINUTES * 60)
-          },
+          status: 409,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         }
       );
     }
@@ -215,11 +215,8 @@ serve(async (req) => {
       );
     }
 
-    // Record successful rate limit hits for both IP and phone
-    await Promise.all([
-      recordRateLimitHit(supabase, ipRateLimitKey),
-      recordRateLimitHit(supabase, phoneRateLimitKey)
-    ]);
+    // Record IP rate limit hit
+    await recordRateLimitHit(supabase, ipRateLimitKey);
 
     const callData: VapiCallResponse = await vapiResponse.json();
     console.log("Call initiated successfully:", callData.id);
@@ -234,7 +231,7 @@ serve(async (req) => {
         matched: false,
         status: 'new'
       }, {
-        onConflict: 'vapi_call_id',
+        onConflict: 'phone_number',
         ignoreDuplicates: false
       });
 
