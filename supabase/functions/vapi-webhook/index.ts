@@ -1,59 +1,16 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
-import { Resend } from "https://esm.sh/resend@4.0.0";
 import { sendWhatsAppMessage } from "../_shared/whatsapp/sendMessage.ts";
 import { generateMessage } from "../_shared/whatsapp/templates.ts";
 import { setConversationState } from "../_shared/whatsapp/conversationState.ts";
+import { sendNotificationEmail } from "../_shared/email/sendEmail.ts";
+import { generateEmail } from "../_shared/email/templates.ts";
+import type { VapiWebhookPayload } from "../_shared/vapi/types.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-vapi-secret",
 };
-
-interface VapiWebhookPayload {
-  message?: {
-    type?: string;
-    call?: {
-      id: string;
-      customer?: {
-        number?: string;
-      };
-      status?: string;
-      endedReason?: string;
-    };
-    transcript?: string;
-    summary?: string;
-    structuredData?: {
-      name?: string;
-      whatsapp?: string;
-      idea_description?: string;
-      problem_solving?: string;
-      target_customer?: string;
-      stage?: string;
-      excitement_reason?: string;
-      background?: string;
-      core_skills?: string[];
-      previous_founder?: boolean;
-      superpower?: string;
-      weaknesses_blindspots?: string[];
-      timeline_start?: string;
-      urgency_level?: string;
-      seeking_skills?: string[];
-      cofounder_type?: string;
-      location_preference?: string;
-      commitment_level?: string;
-      working_style?: string;
-      non_negotiables?: string[];
-      deal_breakers?: string[];
-      equity_thoughts?: string;
-      seriousness_score?: number;
-      
-      match_frequency_preference?: string;
-      success_criteria?: string;
-      willingness_to_pay?: string;
-    };
-  };
-}
 
 serve(async (req) => {
   // Handle CORS preflight requests
@@ -95,6 +52,8 @@ serve(async (req) => {
     // Extract call metadata
     const callId = payload.message?.call?.id;
     const phoneNumber = payload.message?.call?.customer?.number;
+    const callStatus = payload.message?.call?.status || "unknown";
+    const endedReason = payload.message?.call?.endedReason || "unknown";
     const callSummary = payload.message?.summary || payload.message?.transcript || "";
     const structuredData = payload.message?.structuredData;
 
@@ -106,9 +65,14 @@ serve(async (req) => {
       });
     }
 
+    // Reusable call context for email templates
+    const callContext = { callId, phoneNumber, callStatus, endedReason, callSummary };
+
     // Only process if we have structured data with meaningful content
     if (!structuredData) {
       console.log("No structured data found, acknowledging webhook");
+      const email = generateEmail("call_failed", { call: callContext, failureType: "no_structured_data" });
+      await sendNotificationEmail(email);
       return new Response(JSON.stringify({ success: true, message: "No structured data to process" }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -123,6 +87,8 @@ serve(async (req) => {
 
     if (!hasContent) {
       console.log("Structured data is empty, skipping profile creation");
+      const email = generateEmail("call_failed", { call: callContext, failureType: "empty_structured_data" });
+      await sendNotificationEmail(email);
       return new Response(JSON.stringify({ success: true, message: "No meaningful data to process" }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -250,43 +216,9 @@ serve(async (req) => {
       }
     }
 
-    // Send email notification
-    try {
-      const resend = new Resend(Deno.env.get("RESEND_API_KEY"));
-      const adminEmail = Deno.env.get("ADMIN_EMAIL");
-
-      if (adminEmail) {
-        await resend.emails.send({
-          from: "Foundry AI <onboarding@resend.dev>",
-          to: [adminEmail],
-          subject: "🎉 New Founder Interview Completed",
-          html: `
-            <h1>New Founder Profile Submitted</h1>
-            <p>A new founder has completed their interview via Vapi!</p>
-            
-            <h2>Quick Summary:</h2>
-            <ul>
-              <li><strong>WhatsApp:</strong> ${profileData.whatsapp || "N/A"}</li>
-              <li><strong>Phone:</strong> ${profileData.phone_number || "N/A"}</li>
-              <li><strong>Idea:</strong> ${profileData.idea_description || "N/A"}</li>
-              <li><strong>Stage:</strong> ${profileData.stage || "N/A"}</li>
-              <li><strong>Seeking:</strong> ${profileData.seeking_skills?.join(", ") || "N/A"}</li>
-              <li><strong>Location Preference:</strong> ${profileData.location_preference || "N/A"}</li>
-              <li><strong>Seriousness Score:</strong> ${profileData.seriousness_score || "N/A"}/10</li>
-            </ul>
-            
-            <p><a href="https://founderkit.tools/admin">View Full Profile in Admin Dashboard</a></p>
-            
-            <hr>
-            <p style="color: #666; font-size: 12px;">Call ID: ${callId}</p>
-          `,
-        });
-        console.log("Email notification sent to:", adminEmail);
-      }
-    } catch (emailError: any) {
-      // Log but don't fail the webhook if email fails
-      console.error("Failed to send email notification:", emailError.message);
-    }
+    // Send success email notification
+    const email = generateEmail("call_success", { call: callContext, profile: profileData });
+    await sendNotificationEmail(email);
 
     // Automatically trigger embedding generation
     try {
