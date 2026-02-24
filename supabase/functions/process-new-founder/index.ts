@@ -1,10 +1,14 @@
 // supabase/functions/process-new-founder/index.ts
-// Automatically generates embeddings and finds matches when a new founder completes their call
+// Automatically generates embeddings, geocodes location, and finds matches
+// when a new founder completes their call.
+//
+// v2: Uses AI-powered location extraction instead of regex-based parsing.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import OpenAI from "https://esm.sh/openai@4.73.0";
-import { geocodeLocation } from "../_shared/geocoding/geocodeLocation.ts";
+import { extractLocationWithAI } from "../_shared/geocoding/extractLocationWithAI.ts";
+import { geocodeWithAIResults } from "../_shared/geocoding/geocodeLocation.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -118,39 +122,59 @@ serve(async (req) => {
       throw new Error(`Failed to fetch profile: ${fetchError?.message}`);
     }
 
-    // 2. Generate and store embedding
-    console.log("Generating embedding...");
+    // 2. Run embedding generation and AI location extraction in parallel
+    console.log("Generating embedding + extracting location (parallel)...");
     const profileText = generateProfileText(profile);
 
-    const embeddingResponse = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: profileText,
-    });
+    const [embeddingResponse, aiLocationResult] = await Promise.all([
+      // Embedding generation
+      openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: profileText,
+      }),
+      // AI location extraction (only if location_preference exists)
+      profile.location_preference
+        ? extractLocationWithAI(profile.location_preference, openaiApiKey)
+        : Promise.resolve(null),
+    ]);
 
     const embedding = embeddingResponse.data[0].embedding;
 
+    // 3. Store embedding
     console.log("Storing embedding...");
-    const { error: updateError } = await supabase.from("founder_profiles").update({ embedding }).eq("id", founderId);
+    const { error: updateError } = await supabase
+      .from("founder_profiles")
+      .update({ embedding })
+      .eq("id", founderId);
 
     if (updateError) {
       throw new Error(`Failed to store embedding: ${updateError.message}`);
     }
 
-    // 3. Geocode location and store in founder_locations table
+    // 4. Geocode location using AI-extracted data
     let geocodeInfo = null;
-    if (profile.location_preference) {
-      console.log("Geocoding location...");
+    if (profile.location_preference && aiLocationResult) {
+      console.log("[location] AI extracted:", JSON.stringify(aiLocationResult));
 
       try {
-        const geoResult = await geocodeLocation(profile.location_preference);
+        const geoResult = await geocodeWithAIResults(
+          profile.location_preference,
+          aiLocationResult.locations,
+          {
+            isRemoteOk: aiLocationResult.isRemoteOk,
+            isRemoteOnly: aiLocationResult.isRemoteOnly,
+            isHybridOk: aiLocationResult.isHybridOk,
+            willingToRelocate: aiLocationResult.willingToRelocate,
+          },
+        );
 
         const locationData: Record<string, unknown> = {
           founder_id: founderId,
           raw_input: profile.location_preference,
-          is_remote_ok: geoResult.preferences.isRemoteOk,
-          is_remote_only: geoResult.preferences.isRemoteOnly,
-          is_hybrid_ok: geoResult.preferences.isHybridOk,
-          willing_to_relocate: geoResult.preferences.willingToRelocate,
+          is_remote_ok: aiLocationResult.isRemoteOk,
+          is_remote_only: aiLocationResult.isRemoteOnly,
+          is_hybrid_ok: aiLocationResult.isHybridOk,
+          willing_to_relocate: aiLocationResult.willingToRelocate,
         };
 
         if (geoResult.success && geoResult.location) {
@@ -167,9 +191,9 @@ serve(async (req) => {
           locationData.geocoded_at = new Date().toISOString();
 
           geocodeInfo = { city: loc.city, country: loc.country };
-          console.log(`Geocoded: "${profile.location_preference}" → ${loc.city}, ${loc.country}`);
+          console.log(`[location] Geocoded: "${profile.location_preference}" → ${loc.city}, ${loc.country} (via "${geoResult.extractedLocation}")`);
         } else {
-          console.log(`No geocode results: ${geoResult.error}`);
+          console.log(`[location] No geocode results: ${geoResult.error}`);
         }
 
         const { error: locationError } = await supabase
@@ -177,14 +201,14 @@ serve(async (req) => {
           .upsert(locationData, { onConflict: "founder_id" });
 
         if (locationError) {
-          console.error("Failed to store location:", locationError);
+          console.error("[location] Failed to store:", locationError);
         }
       } catch (geoError) {
-        console.error("Geocoding error:", geoError);
+        console.error("[location] Geocoding error:", geoError);
       }
     }
 
-    // 4. Find matches
+    // 5. Find matches via embedding similarity
     console.log("Finding matches...");
     const { data: matches, error: matchError } = await supabase.rpc("match_founders", {
       query_embedding: embedding,
@@ -197,7 +221,7 @@ serve(async (req) => {
       console.error("Error finding matches:", matchError);
     }
 
-    // 5. Store matches
+    // 6. Store matches
     if (matches && matches.length > 0) {
       console.log(`Found ${matches.length} matches`);
 
@@ -220,6 +244,7 @@ serve(async (req) => {
         founderId,
         embeddingGenerated: true,
         location: geocodeInfo,
+        aiExtractedLocations: aiLocationResult?.locations || [],
         matchesFound: matches?.length || 0,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },

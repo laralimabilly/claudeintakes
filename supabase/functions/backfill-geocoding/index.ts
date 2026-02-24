@@ -4,11 +4,14 @@
 //
 // Creates records in founder_locations table for profiles that have
 // location_preference but no corresponding location record.
+//
+// v2: Uses AI-powered location extraction instead of regex-based parsing.
 // ============================================================================
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { geocodeLocation } from '../_shared/geocoding/geocodeLocation.ts';
+import { extractLocationWithAI } from "../_shared/geocoding/extractLocationWithAI.ts";
+import { geocodeWithAIResults, isWorthGeocoding } from "../_shared/geocoding/geocodeLocation.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,6 +33,14 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const openaiApiKey = Deno.env.get("OPENAI_API_KEY");
+
+    if (!openaiApiKey) {
+      return new Response(
+        JSON.stringify({ error: "OPENAI_API_KEY not configured" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
+      );
+    }
 
     // Verify admin access
     const authHeader = req.headers.get("Authorization");
@@ -75,7 +86,7 @@ serve(async (req) => {
         location:founder_locations(id)
       `)
       .not("location_preference", "is", null)
-      .limit(batchSize * 2); // Fetch extra since some will already have locations
+      .limit(batchSize * 2);
 
     if (fetchError) {
       throw new Error(`Failed to fetch profiles: ${fetchError.message}`);
@@ -84,13 +95,14 @@ serve(async (req) => {
     // Filter to only those without location records
     const profilesNeedingGeocode = (profiles || [])
       .filter(p => !p.location || (Array.isArray(p.location) && p.location.length === 0))
+      .filter(p => isWorthGeocoding(p.location_preference))
       .slice(0, batchSize);
 
     if (profilesNeedingGeocode.length === 0) {
       return new Response(
         JSON.stringify({
           success: true,
-          message: "All profiles have location records",
+          message: "All profiles have location records (or none worth geocoding)",
           processed: 0,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -108,15 +120,30 @@ serve(async (req) => {
 
     for (const profile of profilesNeedingGeocode) {
       try {
-        const geoResult = await geocodeLocation(profile.location_preference);
+        // Step 1: AI extraction
+        const aiResult = await extractLocationWithAI(profile.location_preference, openaiApiKey);
+
+        console.log(`[${profile.id}] AI extracted: ${JSON.stringify(aiResult.locations)} from "${profile.location_preference}"`);
+
+        // Step 2: Geocode using AI results
+        const geoResult = await geocodeWithAIResults(
+          profile.location_preference,
+          aiResult.locations,
+          {
+            isRemoteOk: aiResult.isRemoteOk,
+            isRemoteOnly: aiResult.isRemoteOnly,
+            isHybridOk: aiResult.isHybridOk,
+            willingToRelocate: aiResult.willingToRelocate,
+          },
+        );
 
         const locationData: Record<string, unknown> = {
           founder_id: profile.id,
           raw_input: profile.location_preference,
-          is_remote_ok: geoResult.preferences.isRemoteOk,
-          is_remote_only: geoResult.preferences.isRemoteOnly,
-          is_hybrid_ok: geoResult.preferences.isHybridOk,
-          willing_to_relocate: geoResult.preferences.willingToRelocate,
+          is_remote_ok: aiResult.isRemoteOk,
+          is_remote_only: aiResult.isRemoteOnly,
+          is_hybrid_ok: aiResult.isHybridOk,
+          willing_to_relocate: aiResult.willingToRelocate,
         };
 
         if (geoResult.success && geoResult.location) {
@@ -136,7 +163,7 @@ serve(async (req) => {
           console.log(`✓ ${profile.id}: "${profile.location_preference}" → ${loc.city}, ${loc.country}`);
         } else {
           results.preferencesOnly++;
-          console.log(`○ ${profile.id}: Preferences only for "${profile.location_preference}"`);
+          console.log(`○ ${profile.id}: Preferences only for "${profile.location_preference}" (${geoResult.error})`);
         }
 
         const { error: insertError } = await serviceClient
@@ -144,7 +171,6 @@ serve(async (req) => {
           .insert(locationData);
 
         if (insertError) {
-          // Might be duplicate - try upsert
           const { error: upsertError } = await serviceClient
             .from("founder_locations")
             .upsert(locationData, { onConflict: 'founder_id' });
@@ -154,6 +180,7 @@ serve(async (req) => {
           }
         }
 
+        // Rate limit for Nominatim (AI calls are fast, Nominatim is the bottleneck)
         await delay(delayMs);
 
       } catch (error) {

@@ -91,8 +91,8 @@ export const BackfillEmbeddings = () => {
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <Sparkles className="h-5 w-5 text-primary" />
+            <div className="p-2 rounded-lg bg-purple-500/10">
+              <Sparkles className="h-5 w-5 text-purple-400" />
             </div>
             <div>
               <CardTitle className="text-white text-lg">AI Embedding Generator</CardTitle>
@@ -151,7 +151,7 @@ export const BackfillEmbeddings = () => {
         <Button
           onClick={handleBackfill}
           disabled={isLoading || stats.withoutEmbeddings === 0}
-          className="w-full"
+          className="w-full bg-purple-600 hover:bg-purple-700"
           size="lg"
         >
           {isLoading ? (
