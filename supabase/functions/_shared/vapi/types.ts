@@ -9,6 +9,7 @@ export interface VapiWebhookPayload {
       status?: string;
       endedReason?: string;
     };
+    endedReason?: string;
     transcript?: string;
     summary?: string;
     structuredData?: {

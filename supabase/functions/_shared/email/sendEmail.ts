@@ -5,21 +5,17 @@ export interface SendEmailOptions {
   html: string;
 }
 
-export async function sendNotificationEmail(
-  options: SendEmailOptions
-): Promise<void> {
+export async function sendNotificationEmail(options: SendEmailOptions): Promise<void> {
   try {
     const apiKey = Deno.env.get("RESEND_API_KEY");
     const adminEmail = Deno.env.get("ADMIN_EMAIL");
     if (!apiKey || !adminEmail) {
-      console.warn(
-        "Email not configured: missing RESEND_API_KEY or ADMIN_EMAIL"
-      );
+      console.warn("Email not configured: missing RESEND_API_KEY or ADMIN_EMAIL");
       return;
     }
     const resend = new Resend(apiKey);
     await resend.emails.send({
-      from: "Foundry AI <onboarding@resend.dev>",
+      from: "Meetline AI <onboarding@resend.dev>",
       to: [adminEmail],
       subject: options.subject,
       html: options.html,

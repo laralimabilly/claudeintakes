@@ -95,9 +95,15 @@ export default function WhatsAppView() {
     }
   }, [selectedPhone]);
 
-  // Auto-scroll to bottom of chat
+  // Auto-scroll to bottom of chat (within the scroll container only)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = messagesEndRef.current;
+    if (el) {
+      const viewport = el.closest('[data-radix-scroll-area-viewport]');
+      if (viewport) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
+    }
   }, [messages]);
 
   async function fetchConversations() {
@@ -259,9 +265,9 @@ export default function WhatsAppView() {
     const ctx = selectedConv.context;
 
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0">
         {/* Header */}
-        <div className="p-3 border-b border-white/10">
+        <div className="p-3 border-b border-white/10 shrink-0">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Button
@@ -321,7 +327,7 @@ export default function WhatsAppView() {
         </div>
 
         {/* Messages */}
-        <ScrollArea className="flex-1 p-3">
+        <ScrollArea className="flex-1 min-h-0 p-3">
           <div className="space-y-2">
             {messages.map((msg) => (
               <div
@@ -354,7 +360,7 @@ export default function WhatsAppView() {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="flex h-[calc(100vh-180px)] border border-white/10 rounded-lg overflow-hidden bg-charcoal">
+    <div className="flex h-full max-h-[calc(100vh-180px)] border border-white/10 rounded-lg overflow-hidden bg-charcoal">
       {/* Left: Conversation list */}
       <div className={`w-full md:w-80 border-r border-white/10 ${selectedPhone ? "hidden md:block" : ""}`}>
         <div className="p-3 border-b border-white/10">
@@ -365,7 +371,7 @@ export default function WhatsAppView() {
       </div>
 
       {/* Right: Chat panel */}
-      <div className={`flex-1 flex flex-col ${!selectedPhone ? "hidden md:flex" : ""}`}>
+      <div className={`flex-1 flex flex-col min-h-0 ${!selectedPhone ? "hidden md:flex" : ""}`}>
         {renderChatPanel()}
       </div>
     </div>

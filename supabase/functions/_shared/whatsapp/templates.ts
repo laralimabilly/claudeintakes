@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 export interface FounderData {
+  id?: string | null;
   name?: string | null;
   phone_number: string;
   idea_description?: string | null;
@@ -337,6 +338,10 @@ export function onboardingConfirmation(founder: FounderData): string {
   const timeline = founder.timeline_start || "soon";
   const workStyle = founder.working_style || founder.commitment_level || "flexible";
 
+  const profileUrl = founder.id
+    ? `https://meetline.ai/founder/${founder.id}`
+    : null;
+
   return [
     `Hey ${name}, this is Line.`,
     ``,
@@ -348,6 +353,9 @@ export function onboardingConfirmation(founder: FounderData): string {
     `• Prefer: ${workStyle}`,
     ``,
     `Look good? If anything's off, just let me know.`,
+    ...(profileUrl
+      ? [``, `Here's your founder profile: ${profileUrl}`]
+      : []),
     ``,
     `I'll start surfacing co-founder matches within the next week. In the meantime, feel free to ask me anything about the matching process.`,
   ].join("\n");

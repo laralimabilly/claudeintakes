@@ -221,27 +221,6 @@ serve(async (req) => {
     const callData: VapiCallResponse = await vapiResponse.json();
     console.log("Call initiated successfully:", callData.id);
 
-    // Pre-create founder profile with phone number to ensure it's never null
-    // The vapi-webhook will upsert and merge with this record
-    const { error: profileError } = await supabase
-      .from('founder_profiles')
-      .upsert({
-        vapi_call_id: callData.id,
-        phone_number: phoneNumber,
-        matched: false,
-        status: 'new'
-      }, {
-        onConflict: 'phone_number',
-        ignoreDuplicates: false
-      });
-
-    if (profileError) {
-      console.error("Warning: Failed to pre-create founder profile:", profileError);
-      // Don't fail the call - the webhook will still try to create/update the profile
-    } else {
-      console.log("Pre-created founder profile with phone number for call:", callData.id);
-    }
-
     return new Response(
       JSON.stringify({
         success: true,

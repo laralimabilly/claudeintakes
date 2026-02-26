@@ -53,7 +53,7 @@ serve(async (req) => {
     const callId = payload.message?.call?.id;
     const phoneNumber = payload.message?.call?.customer?.number;
     const callStatus = payload.message?.call?.status || "unknown";
-    const endedReason = payload.message?.call?.endedReason || "unknown";
+    const endedReason = payload.message?.endedReason || payload.message?.call?.endedReason || "unknown";
     const callSummary = payload.message?.summary || payload.message?.transcript || "";
     const structuredData = payload.message?.structuredData;
 
@@ -81,8 +81,7 @@ serve(async (req) => {
 
     // Check if structured data has any meaningful values (not all null/empty)
     const hasContent = Object.values(structuredData).some(
-      (val) => val !== null && val !== undefined && val !== "" && 
-               !(Array.isArray(val) && val.length === 0)
+      (val) => val !== null && val !== undefined && val !== "" && !(Array.isArray(val) && val.length === 0),
     );
 
     if (!hasContent) {
@@ -100,25 +99,8 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Determine the phone number to use - prefer Vapi payload, fallback to existing record
-    let finalPhoneNumber = phoneNumber || null;
-
-    // If no phone number from Vapi, try to get it from existing record (pre-created by start-call)
-    if (!finalPhoneNumber) {
-      const { data: existingProfile } = await supabase
-        .from("founder_profiles")
-        .select("phone_number")
-        .eq("vapi_call_id", callId)
-        .single();
-
-      if (existingProfile?.phone_number) {
-        finalPhoneNumber = existingProfile.phone_number;
-        console.log("Using phone number from pre-created profile:", finalPhoneNumber);
-      }
-    }
-
-    // Validate that we have a phone number
-    if (!finalPhoneNumber) {
+    // Validate that we have a phone number from the call
+    if (!phoneNumber) {
       console.error("No phone number available for call:", callId);
       return new Response(JSON.stringify({ error: "Phone number is required but not available" }), {
         status: 400,
@@ -126,10 +108,22 @@ serve(async (req) => {
       });
     }
 
+    // Require at least a name or idea description to create a meaningful profile
+    const hasMinimumData = structuredData.name || structuredData.idea_description || structuredData.background;
+    if (!hasMinimumData) {
+      console.log("Structured data lacks minimum required fields (name/idea/background), skipping");
+      const email = generateEmail("call_failed", { call: callContext, failureType: "insufficient_data" });
+      await sendNotificationEmail(email);
+      return new Response(JSON.stringify({ success: true, message: "Insufficient data to create profile" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // Prepare data for insertion - phone_number is guaranteed to be non-null
     const profileData = {
       vapi_call_id: callId,
-      phone_number: finalPhoneNumber,
+      phone_number: phoneNumber,
       name: structuredData.name || null,
       whatsapp: structuredData.whatsapp || null,
       idea_description: structuredData.idea_description || null,
@@ -153,7 +147,7 @@ serve(async (req) => {
       deal_breakers: structuredData.deal_breakers || null,
       equity_thoughts: structuredData.equity_thoughts || null,
       seriousness_score: structuredData.seriousness_score || null,
-      
+
       match_frequency_preference: structuredData.match_frequency_preference || null,
       success_criteria: structuredData.success_criteria || null,
       willingness_to_pay: structuredData.willingness_to_pay || null,
@@ -223,18 +217,15 @@ serve(async (req) => {
     // Automatically trigger embedding generation
     try {
       console.log("Triggering automatic embedding generation...");
-      
-      const processResponse = await fetch(
-        `${supabaseUrl}/functions/v1/process-new-founder`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${supabaseServiceKey}`,
-          },
-          body: JSON.stringify({ founderId: data.id }),
-        }
-      );
+
+      const processResponse = await fetch(`${supabaseUrl}/functions/v1/process-new-founder`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${supabaseServiceKey}`,
+        },
+        body: JSON.stringify({ founderId: data.id }),
+      });
 
       if (!processResponse.ok) {
         const errorText = await processResponse.text();
@@ -252,23 +243,23 @@ serve(async (req) => {
     // Trigger matching computation (fire and forget)
     try {
       fetch(`${supabaseUrl}/functions/v1/compute-matches`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`,
         },
-        body: JSON.stringify({ founder_id: data.id })
-      }).catch(err => console.error('Matching computation failed:', err));
-      
-      console.log('Triggered matching computation for founder:', data.id);
+        body: JSON.stringify({ founder_id: data.id }),
+      }).catch((err) => console.error("Matching computation failed:", err));
+
+      console.log("Triggered matching computation for founder:", data.id);
     } catch (matchingError) {
-      console.error('Error triggering matching:', matchingError);
+      console.error("Error triggering matching:", matchingError);
       // Don't fail the webhook
     }
 
     // Send WhatsApp onboarding confirmation (with delay so they're off the call)
     try {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       const whatsappPhone = profileData.whatsapp || profileData.phone_number;
       const onboardingMsg = generateMessage("onboarding_confirmation", { founder: profileData });
